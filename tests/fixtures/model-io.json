@@ -1,0 +1,24 @@
+{
+  "description": "Random input and the Keras reference output for build_model3, float32 little-endian, C order.",
+  "architecture": "build_model3",
+  "weights_sha256": "74e51472dbcfd0ba0ff3fcd4d2fc9f9440105e4bee1f0b03b38be8dd4810657a",
+  "bins": 360,
+  "frames": 24,
+  "harmonics": 5,
+  "inputs": {
+    "mag": "model-input-mag.bin",
+    "dphase": "model-input-dphase.bin"
+  },
+  "input_shape": [
+    1,
+    360,
+    24,
+    5
+  ],
+  "output": "model-output.bin",
+  "output_shape": [
+    1,
+    360,
+    24
+  ]
+}

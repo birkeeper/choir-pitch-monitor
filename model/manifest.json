@@ -1,0 +1,954 @@
+{
+  "name": "build_model3",
+  "description": "Cuesta et al. 2020 multi-F0 salience model, exported for TensorFlow.js",
+  "source": {
+    "repo": "/home/birkeeper/Documents/git/multif0-estimation-polyvocals",
+    "commit": "23796931e0b8a36ebf6c0704dcdbd3183699af32",
+    "weights": "models/exp3multif0.h5",
+    "weights_sha256": "74e51472dbcfd0ba0ff3fcd4d2fc9f9440105e4bee1f0b03b38be8dd4810657a",
+    "architecture": "build_model3"
+  },
+  "input": {
+    "layout": "NFTH",
+    "bins": 360,
+    "harmonics": 5,
+    "tensors": [
+      "mag",
+      "dphase"
+    ]
+  },
+  "output": {
+    "layout": "NFT",
+    "tensor": "salience"
+  },
+  "time_receptive_field": 25,
+  "default_threshold": 0.5,
+  "weights_file": "weights.bin",
+  "weights_bytes": 5006804,
+  "dtype": "float32",
+  "ops": [
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "mag"
+      ],
+      "output": "a_in_bn",
+      "layer": null,
+      "role": "input_bn_a",
+      "producer": "input_layer",
+      "weights": {
+        "scale": {
+          "offset": 0,
+          "shape": [
+            5
+          ]
+        },
+        "offset": {
+          "offset": 20,
+          "shape": [
+            5
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "a_in_bn"
+      ],
+      "output": "conv1a",
+      "layer": "conv1a",
+      "activation": "relu",
+      "filters": 16,
+      "kernel": [
+        5,
+        5
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 40,
+          "shape": [
+            5,
+            5,
+            5,
+            16
+          ]
+        },
+        "bias": {
+          "offset": 8040,
+          "shape": [
+            16
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv1a"
+      ],
+      "output": "conv1a_bn",
+      "layer": null,
+      "role": "bn_after_conv1a",
+      "producer": "conv1a",
+      "weights": {
+        "scale": {
+          "offset": 8104,
+          "shape": [
+            16
+          ]
+        },
+        "offset": {
+          "offset": 8168,
+          "shape": [
+            16
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv1a_bn"
+      ],
+      "output": "conv2a",
+      "layer": "conv2a",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        5,
+        5
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 8232,
+          "shape": [
+            5,
+            5,
+            16,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 59432,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv2a"
+      ],
+      "output": "conv2a_bn",
+      "layer": null,
+      "role": "bn_after_conv2a",
+      "producer": "conv2a",
+      "weights": {
+        "scale": {
+          "offset": 59560,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 59688,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv2a_bn"
+      ],
+      "output": "conv3a",
+      "layer": "conv3a",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        5,
+        5
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 59816,
+          "shape": [
+            5,
+            5,
+            32,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 162216,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv3a"
+      ],
+      "output": "conv3a_bn",
+      "layer": null,
+      "role": "bn_after_conv3a",
+      "producer": "conv3a",
+      "weights": {
+        "scale": {
+          "offset": 162344,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 162472,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv3a_bn"
+      ],
+      "output": "conv4a",
+      "layer": "conv4a",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        5,
+        5
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 162600,
+          "shape": [
+            5,
+            5,
+            32,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 265000,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv4a"
+      ],
+      "output": "conv4a_bn",
+      "layer": null,
+      "role": "bn_after_conv4a",
+      "producer": "conv4a",
+      "weights": {
+        "scale": {
+          "offset": 265128,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 265256,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv4a_bn"
+      ],
+      "output": "harm1a",
+      "layer": "harm1a",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        70,
+        3
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 265384,
+          "shape": [
+            70,
+            3,
+            32,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 1125544,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "harm1a"
+      ],
+      "output": "harm1a_bn",
+      "layer": null,
+      "role": "bn_after_harm1a",
+      "producer": "harm1a",
+      "weights": {
+        "scale": {
+          "offset": 1125672,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 1125800,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "harm1a_bn"
+      ],
+      "output": "harm2a",
+      "layer": "harm2a",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        70,
+        3
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 1125928,
+          "shape": [
+            70,
+            3,
+            32,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 1986088,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "harm2a"
+      ],
+      "output": "harm2a_bn",
+      "layer": null,
+      "role": "bn_after_harm2a",
+      "producer": "harm2a",
+      "weights": {
+        "scale": {
+          "offset": 1986216,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 1986344,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "dphase"
+      ],
+      "output": "b_in_bn",
+      "layer": null,
+      "role": "input_bn_b",
+      "producer": "input_layer_1",
+      "weights": {
+        "scale": {
+          "offset": 1986472,
+          "shape": [
+            5
+          ]
+        },
+        "offset": {
+          "offset": 1986492,
+          "shape": [
+            5
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "b_in_bn"
+      ],
+      "output": "conv1b",
+      "layer": "conv1b",
+      "activation": "relu",
+      "filters": 16,
+      "kernel": [
+        5,
+        5
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 1986512,
+          "shape": [
+            5,
+            5,
+            5,
+            16
+          ]
+        },
+        "bias": {
+          "offset": 1994512,
+          "shape": [
+            16
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv1b"
+      ],
+      "output": "conv1b_bn",
+      "layer": null,
+      "role": "bn_after_conv1b",
+      "producer": "conv1b",
+      "weights": {
+        "scale": {
+          "offset": 1994576,
+          "shape": [
+            16
+          ]
+        },
+        "offset": {
+          "offset": 1994640,
+          "shape": [
+            16
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv1b_bn"
+      ],
+      "output": "conv2b",
+      "layer": "conv2b",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        5,
+        5
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 1994704,
+          "shape": [
+            5,
+            5,
+            16,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 2045904,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv2b"
+      ],
+      "output": "conv2b_bn",
+      "layer": null,
+      "role": "bn_after_conv2b",
+      "producer": "conv2b",
+      "weights": {
+        "scale": {
+          "offset": 2046032,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 2046160,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv2b_bn"
+      ],
+      "output": "conv3b",
+      "layer": "conv3b",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        5,
+        5
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 2046288,
+          "shape": [
+            5,
+            5,
+            32,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 2148688,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv3b"
+      ],
+      "output": "conv3b_bn",
+      "layer": null,
+      "role": "bn_after_conv3b",
+      "producer": "conv3b",
+      "weights": {
+        "scale": {
+          "offset": 2148816,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 2148944,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv3b_bn"
+      ],
+      "output": "conv4b",
+      "layer": "conv4b",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        5,
+        5
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 2149072,
+          "shape": [
+            5,
+            5,
+            32,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 2251472,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv4b"
+      ],
+      "output": "conv4b_bn",
+      "layer": null,
+      "role": "bn_after_conv4b",
+      "producer": "conv4b",
+      "weights": {
+        "scale": {
+          "offset": 2251600,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 2251728,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv4b_bn"
+      ],
+      "output": "harm1b",
+      "layer": "harm1b",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        70,
+        3
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 2251856,
+          "shape": [
+            70,
+            3,
+            32,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 3112016,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "harm1b"
+      ],
+      "output": "harm1b_bn",
+      "layer": null,
+      "role": "bn_after_harm1b",
+      "producer": "harm1b",
+      "weights": {
+        "scale": {
+          "offset": 3112144,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 3112272,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "harm1b_bn"
+      ],
+      "output": "harm2b",
+      "layer": "harm2b",
+      "activation": "relu",
+      "filters": 32,
+      "kernel": [
+        70,
+        3
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 3112400,
+          "shape": [
+            70,
+            3,
+            32,
+            32
+          ]
+        },
+        "bias": {
+          "offset": 3972560,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "harm2b"
+      ],
+      "output": "harm2b_bn",
+      "layer": null,
+      "role": "bn_after_harm2b",
+      "producer": "harm2b",
+      "weights": {
+        "scale": {
+          "offset": 3972688,
+          "shape": [
+            32
+          ]
+        },
+        "offset": {
+          "offset": 3972816,
+          "shape": [
+            32
+          ]
+        }
+      }
+    },
+    {
+      "type": "concat",
+      "inputs": [
+        "harm2a_bn",
+        "harm2b_bn"
+      ],
+      "output": "concat",
+      "layer": null,
+      "axis": -1
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "concat"
+      ],
+      "output": "conv7",
+      "layer": "conv7",
+      "activation": "relu",
+      "filters": 64,
+      "kernel": [
+        3,
+        3
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 3972944,
+          "shape": [
+            3,
+            3,
+            64,
+            64
+          ]
+        },
+        "bias": {
+          "offset": 4120400,
+          "shape": [
+            64
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv7"
+      ],
+      "output": "conv7_bn",
+      "layer": null,
+      "role": "bn_after_conv7",
+      "producer": "conv7",
+      "weights": {
+        "scale": {
+          "offset": 4120656,
+          "shape": [
+            64
+          ]
+        },
+        "offset": {
+          "offset": 4120912,
+          "shape": [
+            64
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv7_bn"
+      ],
+      "output": "conv8",
+      "layer": "conv8",
+      "activation": "relu",
+      "filters": 64,
+      "kernel": [
+        3,
+        3
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 4121168,
+          "shape": [
+            3,
+            3,
+            64,
+            64
+          ]
+        },
+        "bias": {
+          "offset": 4268624,
+          "shape": [
+            64
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "conv8"
+      ],
+      "output": "conv8_bn",
+      "layer": null,
+      "role": "bn_after_conv8",
+      "producer": "conv8",
+      "weights": {
+        "scale": {
+          "offset": 4268880,
+          "shape": [
+            64
+          ]
+        },
+        "offset": {
+          "offset": 4269136,
+          "shape": [
+            64
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "conv8_bn"
+      ],
+      "output": "distribution",
+      "layer": "distribution",
+      "activation": "relu",
+      "filters": 8,
+      "kernel": [
+        360,
+        1
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 4269392,
+          "shape": [
+            360,
+            1,
+            64,
+            8
+          ]
+        },
+        "bias": {
+          "offset": 5006672,
+          "shape": [
+            8
+          ]
+        }
+      }
+    },
+    {
+      "type": "batchnorm",
+      "inputs": [
+        "distribution"
+      ],
+      "output": "distribution_bn",
+      "layer": null,
+      "role": "bn_after_distribution",
+      "producer": "distribution",
+      "weights": {
+        "scale": {
+          "offset": 5006704,
+          "shape": [
+            8
+          ]
+        },
+        "offset": {
+          "offset": 5006736,
+          "shape": [
+            8
+          ]
+        }
+      }
+    },
+    {
+      "type": "conv2d",
+      "inputs": [
+        "distribution_bn"
+      ],
+      "output": "squishy",
+      "layer": "squishy",
+      "activation": "sigmoid",
+      "filters": 1,
+      "kernel": [
+        1,
+        1
+      ],
+      "weights": {
+        "kernel": {
+          "offset": 5006768,
+          "shape": [
+            1,
+            1,
+            8,
+            1
+          ]
+        },
+        "bias": {
+          "offset": 5006800,
+          "shape": [
+            1
+          ]
+        }
+      }
+    },
+    {
+      "type": "squeeze",
+      "inputs": [
+        "squishy"
+      ],
+      "output": "salience",
+      "layer": null,
+      "axis": 3
+    }
+  ]
+}

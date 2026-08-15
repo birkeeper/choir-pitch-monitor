@@ -1,0 +1,47 @@
+* {
+    font-size: 0.9rem;
+}
+
+.button-label {
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 8px;
+    border: none;
+    background: var(--bs-light-bg-subtle);
+    color: var(--bs-body-color);
+}
+
+.button-label:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+
+/* Settings sit on one wrapping row; the fixed input width keeps the labels from jumping around
+   as values change length. */
+.setting {
+    white-space: nowrap;
+    margin-bottom: 0.25rem;
+}
+
+.setting input[type="number"] {
+    width: 5rem;
+    background: var(--bs-body-bg);
+    color: var(--bs-body-color);
+    border: 1px solid var(--bs-border-color);
+    border-radius: 4px;
+    padding: 1px 4px;
+}
+
+#summary {
+    white-space: pre-wrap;
+    margin-bottom: 0;
+    color: var(--bs-body-color);
+}
+
+#progressLabel {
+    font-variant-numeric: tabular-nums;
+}
+
+audio {
+    max-width: 100%;
+}

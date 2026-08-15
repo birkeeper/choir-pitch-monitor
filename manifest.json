@@ -1,0 +1,18 @@
+{
+    "name": "Choir Pitch Monitor",
+    "short_name": "Pitch Monitor",
+    "description": "Multi-F0 analysis of choir recordings: how far each sounding note sits from equal temperament.",
+    "start_url": "./pitch_monitor.html",
+    "display": "standalone",
+    "background_color": "#212529",
+    "theme_color": "#212529",
+    "scope": "./",
+    "icons": [
+        {
+            "src": "./icons/pitchmonitor-icon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        }
+    ]
+}

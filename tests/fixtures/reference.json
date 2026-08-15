@@ -1,0 +1,46 @@
+{
+  "description": "Stage-by-stage output of the Python pipeline, for the JS port to check against. All arrays are float32 little-endian, C order.",
+  "audio": {
+    "file": "audio.f32",
+    "samples": 227675,
+    "sample_rate": 22050,
+    "source": "finetune/data/parijs_take02.wav"
+  },
+  "hcqt": {
+    "mag": "hcqt-mag.f32",
+    "dphase": "hcqt-dphase.f32",
+    "shape": [
+      889,
+      360,
+      5
+    ],
+    "order": [
+      "frames",
+      "bins",
+      "harmonics"
+    ]
+  },
+  "salience": {
+    "file": "salience.f32",
+    "shape": [
+      360,
+      889
+    ],
+    "order": [
+      "bins",
+      "frames"
+    ]
+  },
+  "peaks": {
+    "file": "peaks.csv",
+    "threshold": 0.5,
+    "count": 2236
+  },
+  "freq_grid": {
+    "fmin": 32.7,
+    "fmax": 2068.762141794541,
+    "bins": 360
+  },
+  "hop_length": 256,
+  "frames": 889
+}

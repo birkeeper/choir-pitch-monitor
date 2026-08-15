@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang='en' data-bs-theme="dark">
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport'
+          content='width=device-width, user-scalable=yes, initial-scale=1.0, maximum-scale=3.0, minimum-scale=1.0'>
+    <meta http-equiv='X-UA-Compatible' content='ie=edge'>
+    <title>Choir Pitch Monitor</title>
+    <link rel='stylesheet' href='pitch_monitor.css'>
+    <link rel='manifest' href='manifest.json' />
+    <link rel="icon" href="./icons/pitchmonitor-icon.svg" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+    <meta name="robots" content="noindex">
+</head>
+<body>
+<div class="container-xl d-flex flex-column align-items-center w-100">
+
+    <div class="d-flex flex-row align-items-center mt-2 border border-2 rounded-2 w-100">
+        <div class="d-inline-block flex-shrink-0 flex-grow-0 ms-2 mt-2 mb-2" style="width: 4rem">
+            <img src="./icons/pitchmonitor-icon.svg" class="rounded-3" style="width: 100%">
+        </div>
+        <div class="d-inline-block align-items-center flex-grow-0 flex-shrink-1 ms-2 mt-2 mb-2" style="width: 100%">
+            <h2 id="title" class="text-center">Choir Pitch Monitor</h2>
+        </div>
+        <div class="d-inline-block align-items-center flex-shrink-0 flex-grow-0 ms-2 me-2 mt-2 mb-2" style="width: 4rem">
+            <p id="version" class="text-end mb-0"></p>
+        </div>
+    </div>
+
+    <div id="alertPlaceholder" class="d-flex mt-2 flex-column w-100"></div>
+
+    <!-- Load and analyse -->
+    <div class="d-flex flex-column align-items-left mt-2 border border-2 rounded-2 w-100">
+        <div class="d-flex flex-row align-items-center mt-2 w-100">
+            <input type="file" id="audio_input" accept=".flac,.wav,.mp3,audio/*" class="d-none">
+            <label id="audio_input-label" for="audio_input"
+                   class="button-label flex-grow-0 flex-shrink-0 align-items-center ms-2">Load recording</label>
+            <button id="cancel" class="button-label flex-grow-0 flex-shrink-0 ms-2 d-none">Cancel</button>
+            <div id="message" class="flex-grow-1 mx-2">Choose a FLAC, WAV or MP3 recording.</div>
+        </div>
+        <div class="d-flex flex-row align-items-center my-2 w-100">
+            <div class="progress flex-grow-1 ms-2" role="progressbar" style="height: 1rem">
+                <div id="progressBar" class="progress-bar" style="width: 0%"></div>
+            </div>
+            <span id="progressLabel" class="flex-grow-0 flex-shrink-0 mx-2 text-nowrap">idle</span>
+        </div>
+        <audio id="audioElement" controls class="mx-2 mb-2 w-auto d-none"></audio>
+    </div>
+
+    <!-- Analysis settings. Changing any of these re-derives the notes from the cached salience
+         map, so it is instant -- no GPU work is repeated. -->
+    <div class="d-flex flex-column mt-2 border border-2 rounded-2 w-100">
+        <div class="d-flex flex-row align-items-center my-2 w-100 border-bottom border-2">
+            <div class="ms-2 mb-1 fw-bold">Analysis settings</div>
+        </div>
+        <div class="d-flex flex-row flex-wrap align-items-center mb-2 w-100">
+            <label class="setting ms-2">salience threshold
+                <input type="number" id="threshold" value="0.50" min="0.05" max="0.95" step="0.05">
+            </label>
+            <label class="setting ms-2">in-tune band lower
+                <input type="number" id="bandLower" value="-20" min="-50" max="0" step="1"> ¢
+            </label>
+            <label class="setting ms-2">upper
+                <input type="number" id="bandUpper" value="20" min="0" max="50" step="1"> ¢
+            </label>
+            <label class="setting ms-2">drift window
+                <input type="number" id="driftWindow" value="2.0" min="0.2" max="10" step="0.1"> s
+            </label>
+            <label class="setting ms-2">
+                <input type="checkbox" id="refine" checked> sub-bin refinement
+            </label>
+            <label class="setting ms-2">
+                <input type="checkbox" id="relativeToDrift"> judge relative to ensemble drift
+            </label>
+        </div>
+    </div>
+
+    <!-- Results -->
+    <div class="d-flex flex-column mt-2 mb-3 border border-2 rounded-2 w-100">
+        <div class="d-flex flex-row align-items-center my-2 w-100 border-bottom border-2">
+            <div class="ms-2 mb-1 fw-bold">Results</div>
+        </div>
+        <pre id="summary" class="mx-2 mb-2">No analysis yet.</pre>
+        <div class="d-flex flex-row flex-wrap align-items-center mb-2">
+            <button id="downloadDetail" class="button-label ms-2" disabled>Download CSV (per detection)</button>
+            <button id="downloadMultif0" class="button-label ms-2" disabled>Download multif0 TSV (reference format)</button>
+        </div>
+        <p class="mx-2 small text-secondary">
+            The per-detection CSV has one row per detected pitch with its deviation from equal
+            temperament. The multif0 TSV matches <code>utils_train.save_multif0_output</code>, so it
+            can be diffed directly against <code>predict_on_audio.py</code>.
+        </p>
+    </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
+<script src='pitch_monitor.js' type="module"></script>
+</body>
+</html>
