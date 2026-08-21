@@ -52,6 +52,24 @@ const write = (text, cls) => {
     logElement.appendChild(line);
 };
 
+/**
+ * Report how the model was adapted to this GPU. The chunk width and the kernel splitting are both
+ * derived from the GPU's reported WEBGL_MAX_TEXTURE_SIZE, so throughput numbers below are only
+ * comparable between machines that landed on the same plan.
+ */
+function describePlan(model) {
+    const plan = model.plan;
+    write(`device plan: chunk ${plan.chunkFrames} frames`
+        + (plan.maxTextureSize ? `, max texture ${plan.maxTextureSize}` : ', unconstrained'));
+    const splits = Object.entries(plan.splits);
+    if (splits.length) {
+        write(`  ${splits.length} layer(s) split to fit: `
+            + splits.map(([name, rows]) => `${name} in ${rows}-row groups`).join(', '));
+    } else {
+        write('  no layers need splitting');
+    }
+}
+
 async function fetchFloat32(url) {
     const response = await fetch(url);
     if (!response.ok) { throw new Error(`${url}: ${response.status}`); }
@@ -142,6 +160,7 @@ document.getElementById('run').addEventListener('click', async () => {
     write(`model: ${model.source.architecture} / ${model.source.weights}`);
     write(`bins ${model.bins}, harmonics ${model.harmonics}, `
         + `default threshold ${model.defaultThreshold}`);
+    describePlan(model);
     write('');
 
     write(`correctness on backend '${tf.getBackend()}':`);

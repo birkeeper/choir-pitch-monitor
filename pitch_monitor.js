@@ -38,8 +38,31 @@ elements.version.textContent = VERSION;
 
 /** Everything about the recording currently loaded. Null until one is analysed. */
 let session = null;
+/** How the model was adapted to this machine's GPU; reported by the worker on READY. */
+let device = null;
 let worker = null;
 let analysing = false;
+
+/**
+ * Describe how the model had to be adapted to this GPU.
+ *
+ * Worth showing rather than hiding: the chunk width and the kernel splitting both come from the
+ * GPU's reported texture limit, both affect throughput, and both differ between machines -- so a
+ * timing figure is not comparable across machines without them.
+ */
+function describePlan(backend, plan) {
+    if (!plan) { return ''; }
+    const parts = [`chunk ${plan.chunkFrames} frames`];
+    if (plan.maxTextureSize) {
+        parts.push(`max texture ${plan.maxTextureSize}`);
+    }
+    const splits = Object.entries(plan.splits ?? {});
+    parts.push(splits.length
+        ? `${splits.length} layer(s) split to fit: `
+            + splits.map(([name, rows]) => `${name}/${rows}`).join(', ')
+        : 'no layers split');
+    return `Device plan (${backend}): ${parts.join(', ')}`;
+}
 
 function alertUser(message, variant = 'danger') {
     const wrapper = document.createElement('div');
@@ -117,9 +140,11 @@ async function analyse(file) {
                 break;
 
             case 'READY':
+                device = data.plan;
                 elements.summary.textContent =
                     `Backend: ${data.backend}\n`
                     + `Model: ${data.source.architecture} / ${data.source.weights}\n`
+                    + `${describePlan(data.backend, data.plan)}\n`
                     + `Analysing ${formatDuration(source.duration)} of audio...`;
                 break;
 
@@ -259,6 +284,8 @@ function summarise(session, peaks, drift, options) {
             + `at ${FRAME_RATE.toFixed(2)} fps`,
         '',
         `Backend     ${session.backend}`,
+        ...(device ? [`Device      ${describePlan(session.backend, device).replace(
+            /^Device plan \([^)]*\): /, '')}`] : []),
         `Timing      features ${timing.features.toFixed(1)} s `
             + `(${timing.featureRealTimeFactor.toFixed(2)}x real-time), `
             + `inference ${timing.inference.toFixed(1)} s `

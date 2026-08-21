@@ -7,8 +7,9 @@
 // the slowest stage (see PLAN.md section 2.1).
 
 import { HcqtExtractor } from './hcqt.js';
-import { SalienceModel, selectBackend } from './model.js';
-import { MODEL_URL, SAMPLE_RATE } from '../constants.js';
+import { GraphSalienceModel } from './graph-model.js';
+import { selectBackend } from './backend.js';
+import { MODEL_URL, SAMPLE_RATE, DEFAULT_THRESHOLD } from '../constants.js';
 
 let extractor = null;
 let model = null;
@@ -22,15 +23,21 @@ async function ensureLoaded() {
     // Both are static assets; fetching them concurrently saves a round trip on a cold cache.
     [extractor, model] = await Promise.all([
         HcqtExtractor.load(MODEL_URL),
-        SalienceModel.load(MODEL_URL),
+        GraphSalienceModel.load(),
     ]);
     post({
         type: 'READY',
         backend,
-        source: model.source,
-        defaultThreshold: model.defaultThreshold,
+        source: {
+            architecture: 'exp3multif0 (tensorflowjs_converter graph model)',
+            weights: 'model/exp3multif0_tfjs/',
+        },
+        defaultThreshold: DEFAULT_THRESHOLD,
         maxWindow: extractor.maxWindow,
         maxWindowSeconds: extractor.maxWindow / SAMPLE_RATE,
+        // How the model was adapted to this GPU's texture limits; worth surfacing because it
+        // affects throughput and differs between machines.
+        plan: model.plan,
     });
 }
 

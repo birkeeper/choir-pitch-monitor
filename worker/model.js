@@ -1,4 +1,10 @@
-// Runs the exported Cuesta multi-F0 salience model on TensorFlow.js.
+// Runs the exported Cuesta multi-F0 salience model on TensorFlow.js, from a flat weight blob and
+// an explicit op list.
+//
+// NOTE: the app runs worker/graph-model.js (the tensorflowjs_converter output) instead. This module
+// is kept as an independent reference implementation -- it is validated against Keras across every
+// device plan by tests/check-model.mjs -- and because it is the only path that works on GPUs whose
+// texture limit is too small for the converted graph, since it can split tall kernels to fit.
 //
 // The model is not a TF.js layers or graph model. tools/export_model.py emits an ordered op list
 // (model/manifest.json) plus a flat float32 blob (model/weights.bin), and this file interprets it.
@@ -8,31 +14,71 @@
 // layout predict_on_audio.py feeds the Keras model: (batch, 360, frames, 5).
 
 import * as tf from '../libraries/tfjs/tfjs.js';
-import { INFERENCE_CHUNK_FRAMES } from '../constants.js';
+import { planForDevice } from './device-plan.js';
+import { selectBackend, deviceTextureLimit } from './backend.js';
 
-// Preference order. WebGPU is the only backend that makes this model comfortably usable; WebGL is
-// workable; CPU is a correctness fallback and will be extremely slow. See PLAN.md section 2.1.
-const BACKEND_PREFERENCE = ['webgpu', 'webgl', 'cpu'];
+// Re-exported so existing callers (tests/test-model.html) keep working now that backend selection
+// lives in its own module.
+export { selectBackend, deviceTextureLimit };
 
 /**
- * Select the fastest available backend.
- * @param {string[]} [preference] override the default preference order
- * @returns {Promise<string>} the backend actually activated
+ * Compute a stride-1 'same'-padding conv2d whose kernel is taller than a single texture-backed
+ * convolution can safely handle, by splitting the kernel into height-wise chunks and summing
+ * 'valid' convolutions of each chunk against a correspondingly offset input slice.
+ *
+ * This is an exact decomposition, not an approximation: for output row `oh`,
+ *   same_conv(x, K)[oh] = sum_{kh=0}^{K.height-1} K[kh] * padded_x[oh + kh]
+ * splits cleanly into independent sums over any partition of the kh range, each of which is
+ * itself a 'valid' convolution of a kernel slice against the matching slice of padded_x. See
+ * worker/device-plan.js for what decides when this is needed, and tests/check-model.mjs for the
+ * numeric check of every plan against the Keras reference.
+ *
+ * Only the height axis is split, but BOTH axes are padded up front: switching to 'valid' removes
+ * the implicit padding on the width axis too, so a kernel wider than 1 would silently produce a
+ * narrower output than 'same' would. That is not hypothetical -- the harm1/harm2 layers have
+ * kernel width 3 and get split on GPUs with an 8192 or smaller texture limit.
+ *
+ * @param {tf.Tensor4D} input       [batch, height, width, inChannels]
+ * @param {tf.Tensor4D} kernel      [kernelHeight, kernelWidth, inChannels, outChannels]
+ * @param {tf.Tensor1D} bias        [outChannels]
+ * @param {number} groupHeight      max kernel rows per chunk
+ * @param {'relu'|'sigmoid'} activation
  */
-export async function selectBackend(preference = BACKEND_PREFERENCE) {
-    for (const backend of preference) {
-        try {
-            if (await tf.setBackend(backend)) {
-                await tf.ready();
-                return backend;
-            }
-        } catch (error) {
-            // A backend can fail at registration (no WebGPU adapter, WebGL context refused). Fall
-            // through to the next one rather than failing the whole analysis.
-            console.warn(`model: backend '${backend}' unavailable:`, error.message);
-        }
+function splitHeightConv2d(input, kernel, bias, groupHeight, activation) {
+    const [kernelHeight, kernelWidth] = kernel.shape;
+    const [, height, width] = input.shape;
+    // 'same' padding for stride 1: total padding is kernelSize - 1 per axis, with any odd extra
+    // element after the input (TensorFlow's convention, reproduced here so the split matches an
+    // unsplit 'same' convolution exactly).
+    const padTop = Math.floor((kernelHeight - 1) / 2);
+    const padBottom = Math.ceil((kernelHeight - 1) / 2);
+    const padLeft = Math.floor((kernelWidth - 1) / 2);
+    const padRight = Math.ceil((kernelWidth - 1) / 2);
+    const padded = tf.pad(input,
+        [[0, 0], [padTop, padBottom], [padLeft, padRight], [0, 0]]);
+
+    let sum = null;
+    for (let offset = 0; offset < kernelHeight; offset += groupHeight) {
+        const chunkHeight = Math.min(groupHeight, kernelHeight - offset);
+        // 'valid' conv of a chunkHeight-tall kernel against a (height + chunkHeight - 1)-tall
+        // slice of the already-padded input yields exactly `height` x `width` outputs -- the same
+        // shape the full 'same' convolution would produce.
+        const inputSlice = tf.slice(padded, [0, offset, 0, 0],
+            [-1, height + chunkHeight - 1, -1, -1]);
+        const kernelSlice = tf.slice(kernel, [offset, 0, 0, 0], [chunkHeight, -1, -1, -1]);
+        const partial = tf.conv2d(inputSlice, kernelSlice, 1, 'valid');
+        sum = sum ? tf.add(sum, partial) : partial;
     }
-    throw new Error(`no usable TensorFlow.js backend (tried ${preference.join(', ')})`);
+
+    if (sum.shape[1] !== height || sum.shape[2] !== width) {
+        // A shape drift here changes the output size rather than erroring, which downstream shows
+        // up as truncated salience rather than as a failure. Refuse instead.
+        throw new Error(`split conv produced [${sum.shape}] but 'same' requires `
+            + `height ${height} and width ${width}`);
+    }
+
+    const biased = tf.add(sum, bias);
+    return activation === 'relu' ? tf.relu(biased) : tf.sigmoid(biased);
 }
 
 export class SalienceModel {
@@ -40,12 +86,23 @@ export class SalienceModel {
     #weights;   // op output name -> {name: tf.Tensor}
     #inputNames;
     #outputName;
+    #plan;      // chunk width and per-op kernel splitting for this GPU; see planForDevice
 
-    constructor(manifest, weights) {
+    constructor(manifest, weights, plan) {
         this.#manifest = manifest;
         this.#weights = weights;
         this.#inputNames = manifest.input.tensors;
         this.#outputName = manifest.output.tensor;
+        this.#plan = plan;
+    }
+
+    /** How this model was adapted to the current GPU, for display and diagnostics. */
+    get plan() {
+        return {
+            chunkFrames: this.#plan.chunkFrames,
+            maxTextureSize: this.#plan.maxTextureSize,
+            splits: Object.fromEntries(this.#plan.splits),
+        };
     }
 
     /** Frequency bins in the salience output (360). */
@@ -62,9 +119,13 @@ export class SalienceModel {
 
     /**
      * Fetch and instantiate the model.
+     *
+     * Must be called after the backend is active: the plan depends on the GPU's reported limits.
+     *
      * @param {string} baseUrl directory containing manifest.json and the weight blob
+     * @param {object} [options] forwarded to planForDevice ({mode, maxTextureSize})
      */
-    static async load(baseUrl) {
+    static async load(baseUrl, options = {}) {
         const manifestUrl = new URL('manifest.json', new URL(baseUrl, self.location.href));
         const manifestResponse = await fetch(manifestUrl);
         if (!manifestResponse.ok) {
@@ -96,7 +157,12 @@ export class SalienceModel {
             }
             weights.set(op.output, tensors);
         }
-        return new SalienceModel(manifest, weights);
+        // The limit is read from the live backend unless the caller pins one (tests do).
+        const plan = planForDevice(manifest, {
+            maxTextureSize: deviceTextureLimit(),
+            ...options,
+        });
+        return new SalienceModel(manifest, weights, plan);
     }
 
     /**
@@ -132,6 +198,17 @@ export class SalienceModel {
         switch (op.type) {
             case 'conv2d': {
                 const { kernel, bias } = this.#weights.get(op.output);
+
+                // planForDevice marks the ops whose im2col matrix would not fit this GPU's
+                // textures -- on a 16384-limit GPU at 256 frames that is the 'distribution'
+                // layer, whose (360, 1) kernel over 64 channels would otherwise fail with
+                // "Requested texture size [23040x23040] greater than WebGL maximum".
+                // splitHeightConv2d is an exact linear decomposition, not an approximation.
+                const groupHeight = this.#plan.splits.get(op.output);
+                if (groupHeight) {
+                    return splitHeightConv2d(inputs[0], kernel, bias, groupHeight, op.activation);
+                }
+
                 if (op.activation === 'relu') {
                     // Fusing bias and ReLU into the convolution avoids materialising two extra
                     // full-size intermediates per layer, which matters: the largest is 23.6 MB.
@@ -179,7 +256,7 @@ export class SalienceModel {
         const bins = this.bins;
         const harmonics = this.harmonics;
         const context = Math.ceil((this.#manifest.time_receptive_field - 1) / 2);
-        const stride = INFERENCE_CHUNK_FRAMES;
+        const stride = this.#plan.chunkFrames;
         const salience = new Float32Array(bins * frames);
 
         for (let start = 0; start < frames; start += stride) {

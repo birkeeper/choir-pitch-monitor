@@ -7,8 +7,10 @@
 # scopes, which is exactly where inference runs. Bundling resolves every specifier ahead of time and
 # yields one file that a module worker can import directly.
 #
-# Only tfjs-core plus backends is bundled: the model is executed from model/manifest.json by
-# worker/model.js, so tfjs-layers and tfjs-converter are not needed.
+# Bundles tfjs-core, the backends, and tfjs-converter. The converter package is what provides
+# loadGraphModel, which worker/model.js uses to run the graph model produced by
+# tensorflowjs_converter (model/exp3multif0_tfjs/). tfjs-layers is not needed: the model is a
+# graph model, not a layers model.
 
 set -e
 
@@ -36,6 +38,7 @@ EOF
 
 npm install --no-audit --no-fund --silent \
     "@tensorflow/tfjs-core@$TFJS_VERSION" \
+    "@tensorflow/tfjs-converter@$TFJS_VERSION" \
     "@tensorflow/tfjs-backend-webgl@$TFJS_VERSION" \
     "@tensorflow/tfjs-backend-webgpu@$TFJS_VERSION" \
     "@tensorflow/tfjs-backend-cpu@$TFJS_VERSION" \
@@ -49,6 +52,9 @@ import '@tensorflow/tfjs-backend-cpu';
 import '@tensorflow/tfjs-backend-webgl';
 import '@tensorflow/tfjs-backend-webgpu';
 export * from '@tensorflow/tfjs-core';
+// loadGraphModel / GraphModel, for the tensorflowjs_converter output. No name collisions with
+// core's exports.
+export * from '@tensorflow/tfjs-converter';
 EOF
 
 echo "Bundling..."

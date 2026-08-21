@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang='en' data-bs-theme="dark">
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <title>Backend parity</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+    <meta name="robots" content="noindex">
+    <style>
+        * { font-size: 0.9rem; }
+        pre { white-space: pre-wrap; }
+        .ok { color: var(--bs-success); }
+        .bad { color: var(--bs-danger); }
+        .muted { color: var(--bs-secondary-color); }
+    </style>
+</head>
+<body>
+<div class="container-xl py-3">
+    <h4>Backend parity</h4>
+    <p class="muted">
+        Runs the same real HCQT features through the model on every available TF.js backend and
+        compares them against the CPU backend, which is the reference. This is the test that catches
+        a backend computing the model <em>wrongly</em> rather than merely slowly &mdash; a failure
+        mode that a small synthetic fixture does not trigger, and that produced a salience map
+        capped at 0.024 instead of 0.99 on WebGL with its default settings.
+    </p>
+    <p class="muted">
+        <strong>Run this in a real browser tab, not headless.</strong> Headless Chrome frequently
+        cannot obtain a WebGPU adapter, so WebGPU goes untested there.
+    </p>
+    <div class="mb-3">
+        <button id="run" class="btn btn-primary btn-sm">Run</button>
+        <label class="ms-3">
+            <input type="checkbox" id="im2col"> force WEBGL_CONV_IM2COL on (reproduces the bug)
+        </label>
+        <label class="ms-3">frames
+            <input type="number" id="frames" value="50" min="26" max="2000" step="1"
+                   class="form-control form-control-sm d-inline-block" style="width: 6rem">
+        </label>
+        <label class="ms-3">clip
+            <input type="file" id="clip" accept=".wav,.flac,.mp3,audio/*">
+        </label>
+        <span class="muted">defaults to tests/fixtures/clip2s.wav</span>
+    </div>
+    <pre id="log" class="border rounded p-3"></pre>
+</div>
+
+<script type="module">
+import * as tf from '../libraries/tfjs/tfjs.js';
+import { HcqtExtractor } from '../worker/hcqt.js';
+import { GraphSalienceModel } from '../worker/graph-model.js';
+import { extractPeaks } from '../worker/notes.js';
+import { AudioSource } from '../js/audio-source.js';
+import { MODEL_URL, DEFAULT_THRESHOLD, FRAME_RATE } from '../constants.js';
+// Imported for its side effect: it sets WEBGL_CONV_IM2COL=false, which is the fix under test.
+import '../worker/backend.js';
+
+const logElement = document.getElementById('log');
+const write = (text, cls) => {
+    const line = document.createElement('span');
+    if (cls) { line.className = cls; }
+    line.textContent = text + '\n';
+    logElement.appendChild(line);
+};
+
+/** Take the first `limit` frames out of a bin-major [bin][frame][harmonic] buffer. */
+function sliceFrames(source, frames, limit, bins = 360, harmonics = 5) {
+    const out = new Float32Array(bins * limit * harmonics);
+    for (let bin = 0; bin < bins; bin++) {
+        const from = bin * frames * harmonics;
+        out.set(source.subarray(from, from + limit * harmonics), bin * limit * harmonics);
+    }
+    return out;
+}
+
+function summarise(salience) {
+    let max = -Infinity;
+    let sum = 0;
+    for (let i = 0; i < salience.length; i++) {
+        if (salience[i] > max) { max = salience[i]; }
+        sum += salience[i];
+    }
+    return { max, mean: sum / salience.length };
+}
+
+document.getElementById('run').addEventListener('click', async () => {
+    logElement.textContent = '';
+    const forceIm2col = document.getElementById('im2col').checked;
+    if (forceIm2col) {
+        tf.env().set('WEBGL_CONV_IM2COL', true);
+        write('WEBGL_CONV_IM2COL forced ON -- expect WebGL to disagree with CPU', 'muted');
+    }
+
+    // Features are computed once, in plain JS, so every backend gets byte-identical input and any
+    // disagreement is attributable to the backend alone.
+    let source;
+    const chosen = document.getElementById('clip').files?.[0];
+    try {
+        if (chosen) {
+            source = await AudioSource.load(chosen);
+        } else {
+            const blob = await (await fetch('./fixtures/clip2s.wav')).blob();
+            source = await AudioSource.load(new File([blob], 'clip2s.wav', { type: 'audio/wav' }));
+        }
+    } catch (error) {
+        write(`could not load audio: ${error.message}`, 'bad');
+        write('Pick a clip with the file input, or generate the fixture with '
+            + 'tools/make_reference.py.', 'muted');
+        return;
+    }
+
+    write(`clip: ${source.info.name}, ${source.duration.toFixed(2)} s`);
+    const extractor = await HcqtExtractor.load(MODEL_URL);
+    const extracted = await extractor.extract(source.samples);
+
+    // The CPU reference is pure JS and by far the slowest participant, so the comparison is capped
+    // to a modest number of frames. The discrepancy this test looks for is a factor of forty, not a
+    // subtle drift, so a short excerpt is ample.
+    const limit = Math.min(extracted.frames,
+        Math.max(26, Number(document.getElementById('frames').value) || 50));
+    const features = limit === extracted.frames ? extracted : {
+        frames: limit,
+        mag: sliceFrames(extracted.mag, extracted.frames, limit),
+        dphase: sliceFrames(extracted.dphase, extracted.frames, limit),
+    };
+    write(`features: ${features.frames} of ${extracted.frames} frames `
+        + `at ${FRAME_RATE.toFixed(2)} fps`);
+    write('');
+
+    const results = {};
+    for (const backend of ['cpu', 'webgl', 'webgpu']) {
+        let available = false;
+        try {
+            available = await tf.setBackend(backend);
+            if (available) { await tf.ready(); }
+        } catch (error) {
+            write(`${backend.padEnd(7)} unavailable (${error.message})`, 'muted');
+            continue;
+        }
+        if (!available) {
+            write(`${backend.padEnd(7)} unavailable`, 'muted');
+            continue;
+        }
+
+        try {
+            // Reloaded per backend: weights live on the previous backend's device.
+            const model = await GraphSalienceModel.load();
+            const started = performance.now();
+            const salience = await model.predict(
+                features.mag, features.dphase, features.frames);
+            const elapsed = performance.now() - started;
+            model.dispose();
+
+            const stats = summarise(salience);
+            const peaks = extractPeaks(salience, features.frames, {
+                threshold: DEFAULT_THRESHOLD, refine: true,
+            });
+            const msPerFrame = elapsed / features.frames;
+            const realTime = (features.frames / FRAME_RATE) / (elapsed / 1000);
+            results[backend] = { salience, stats, peaks: peaks.count };
+
+            write(`${backend.padEnd(7)} max ${stats.max.toFixed(6)}  `
+                + `mean ${stats.mean.toFixed(6)}  peaks ${String(peaks.count).padStart(5)}  `
+                + `${msPerFrame.toFixed(1)} ms/frame  ${realTime.toFixed(2)}x real-time`);
+        } catch (error) {
+            write(`${backend.padEnd(7)} failed: ${error.message}`, 'bad');
+        }
+    }
+
+    write('');
+    const reference = results.cpu;
+    if (!reference) {
+        write('CPU backend unavailable, so there is nothing to compare against.', 'bad');
+        return;
+    }
+
+    let allAgree = true;
+    for (const [backend, result] of Object.entries(results)) {
+        if (backend === 'cpu') { continue; }
+        let maxDifference = 0;
+        for (let i = 0; i < result.salience.length; i++) {
+            maxDifference = Math.max(maxDifference,
+                Math.abs(result.salience[i] - reference.salience[i]));
+        }
+        // GPU convolutions accumulate in a different order than the CPU reference, so exact
+        // equality is not expected; 1e-3 is float32 reassociation noise. The failure this test
+        // exists for is off by two orders of magnitude, not by rounding.
+        const agrees = maxDifference < 1e-3;
+        allAgree = allAgree && agrees;
+        write(`${backend} vs cpu: max abs difference ${maxDifference.toExponential(3)}, `
+            + `peaks ${result.peaks} vs ${reference.peaks} -- ${agrees ? 'AGREE' : 'DISAGREE'}`,
+            agrees ? 'ok' : 'bad');
+    }
+
+    write('');
+    write(allAgree
+        ? 'PASS -- every available backend agrees with the CPU reference'
+        : 'FAIL -- a backend computes this model incorrectly; do not trust its output',
+        allAgree ? 'ok' : 'bad');
+});
+</script>
+</body>
+</html>

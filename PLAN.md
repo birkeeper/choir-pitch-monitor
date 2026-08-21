@@ -318,13 +318,88 @@ inference.
 
 ---
 
+## 7a. Implementation findings
+
+Things discovered while building the first milestone that were not visible when the plan was
+written. All measured on the development laptop: Intel UHD Graphics (Comet Lake GT2), Mesa/ANGLE,
+`WEBGL_MAX_TEXTURE_SIZE` = 16384.
+
+### The model runs from the converted graph, not the hand-written interpreter
+
+`tensorflowjs_converter` output lives in `model/exp3multif0_tfjs/` and is what the app executes
+(`worker/graph-model.js`). Two properties of it were established by probing rather than assumption:
+
+- **Its time axis is frozen at 50 frames.** Any other width is rejected. Each dispatch is therefore
+  50 frames wide and only the context-complete middle 26 are kept, so ~1.9x the minimum number of
+  frames pass through the GPU. `tools/relax_graph_time_axis.py` can relax the axis to dynamic
+  without re-exporting (the graph is entirely shape-agnostic: 16 `_FusedConv2D`, `Mul`/`AddV2`
+  pairs for the batch norms, a `ConcatV2`, a `Sigmoid` and a `Squeeze`; the width appears only in
+  the two `Placeholder` nodes). Currently left at 50 by choice.
+- **`inputs:0` is the magnitude and `inputs_1:0` the phase differential.** Confirmed numerically --
+  0.997 correlation with the Python salience the right way round, 0.114 the wrong way round.
+  Swapping them yields plausible output rather than an error, so the mapping is pinned explicitly.
+
+The op-list interpreter (`worker/model.js`, `tools/export_model.py`) is retained as an independent
+reference implementation, validated against Keras across every device plan by
+`tests/check-model.mjs`. It is also the only path that can run on a GPU whose texture limit is too
+small for the converted graph, because it can split tall kernels.
+
+### TF.js's WebGL backend computes this model incorrectly by default
+
+The salience map came back squashed into `[0.0001, 0.0239]` instead of reaching 0.99, yielding zero
+detections. Not a precision fallback -- `WEBGL_RENDER_FLOAT32_ENABLED` was true. The fault is in the
+**packed im2col convolution path**:
+
+| configuration | max salience | verdict |
+|---|---|---|
+| defaults | 0.023851 | wrong |
+| `WEBGL_CONV_IM2COL=false` | 0.966290 | correct (CPU: 0.966290) |
+| `WEBGL_PACK=false` | 0.966290 | correct, but unusable (see below) |
+
+`worker/backend.js` sets `WEBGL_CONV_IM2COL=false`. `WEBGL_PACK=false` is not an alternative: an
+unpacked im2col matrix loses packing's 2x texture headroom and fails outright with
+`Requested texture size [20365x20365]`.
+
+Both implementations produced *identical* wrong numbers before the fix, which is what proved the
+fault was in TF.js rather than in either of ours.
+
+Attempts to keep im2col (the fast path) and merely shrink the convolutions did **not** recover
+correctness, so there is no threshold to steer by:
+
+| sharedDim | numCols | peaks (reference: 466) |
+|---|---|---|
+| 8512 | 8640 | correct (small synthetic fixture) |
+| 15872 | 20160 | 84 -- wrong, despite both dimensions under 16384 |
+| 23040 | 20160 | 45 -- wrong |
+| 1536 | 100800 | 466 -- correct, but 74 ms/frame |
+
+### The correctness fix is expensive
+
+| path | ms/frame | real-time factor |
+|---|---|---|
+| im2col (wrong output) | ~19 | 0.62x |
+| `WEBGL_CONV_IM2COL=false` (correct) | 131 | 0.09x |
+
+At 0.09x a four-minute recording needs roughly 45 minutes of inference, so **WebGL is a correctness
+fallback, not a usable configuration**. WebGPU does not use this code path at all and is the
+preferred backend for both reasons; it could not be measured here because headless Chrome cannot
+obtain a WebGPU adapter on this machine. Establishing whether WebGPU is both correct and fast in a
+real browser tab is the next thing that matters, and `tests/test-backend-parity.html` exists to
+answer it.
+
+### Verified end to end
+
+With the fix, on a 2 s excerpt: salience max 0.9906 against Python's 0.9910, and 466 detected peaks
+against Python's 469 -- the same 466 the interpreter produces on the CPU backend in Node.
+
 ## 8. Known limitations, stated up front
 
 - **Cents resolution** is 20 cents unless sub-bin refinement is enabled (§2.4).
 - **Frequency range** is C1–C7 (32.7–2068.8 Hz), fixed by the model. Notes above C7 are invisible;
   in practice this is not a constraint for choral repertoire.
-- **Analysis speed** on this laptop is around real-time at best (§2.1). A 4-minute recording will
-  take minutes, not seconds.
+- **Analysis speed** is far worse than §2.1 predicted, because the only correct WebGL configuration
+  is also the slow one: 0.09x real-time, so a 4-minute recording takes about 45 minutes. See §7a.
+  This is the main open problem, and WebGPU is the most likely way out.
 - **Unisons and octaves** partially merge into a single detection — inherent to single-microphone
   multi-F0, unchanged from the earlier discussion.
 - **No voice-part attribution.** By design (decision 1); the conductor maps notes to parts.

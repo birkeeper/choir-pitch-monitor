@@ -50,8 +50,26 @@ def build_op_list(model):
 
     Returns a list of dicts, each naming its input tensor(s), output tensor and the Keras layer
     supplying its weights. Tensor names are arbitrary labels used only to wire the ops together.
+
+    Each conv op records `in_channels` alongside its kernel. That is what worker/model.js needs to
+    compute the op's im2col reduction (kernel_h * kernel_w * in_channels) and decide, against the
+    GPU's actual reported WEBGL_MAX_TEXTURE_SIZE, whether the op has to be evaluated as a sum of
+    height-wise slices. The decision deliberately is not made here: it depends on the machine
+    running the model, not on the machine that exported it.
     """
     ops = []
+    # Input channel count of each named tensor, tracked alongside construction so each conv op can
+    # record the reduction inputs without re-deriving the graph shape from scratch.
+    channels = {"mag": 5, "dphase": 5}
+
+    def conv_op(name, filters, kernel, activation, input_name):
+        in_channels = channels[input_name]
+        op = {"type": "conv2d", "inputs": [input_name], "output": name,
+              "layer": name, "activation": activation,
+              "filters": filters, "kernel": list(kernel),
+              "in_channels": in_channels}
+        channels[name] = filters
+        return op
 
     # `producer` is the name of the Keras layer feeding each batch norm, used to look the batch
     # norm up in map_batchnorm_layers(). For the two input batch norms that is the InputLayer.
@@ -64,6 +82,7 @@ def build_op_list(model):
         ops.append({"type": "batchnorm", "inputs": [prev], "output": f"{branch}_in_bn",
                     "layer": None, "role": f"input_bn_{branch}",
                     "producer": input_layer_names[index]})
+        channels[f"{branch}_in_bn"] = channels[source]
         prev = f"{branch}_in_bn"
 
         for conv_name, filters, kernel in (
@@ -74,16 +93,16 @@ def build_op_list(model):
             (f"harm1{branch}", 32, (70, 3)),
             (f"harm2{branch}", 32, (70, 3)),
         ):
-            ops.append({"type": "conv2d", "inputs": [prev], "output": conv_name,
-                        "layer": conv_name, "activation": "relu",
-                        "filters": filters, "kernel": list(kernel)})
+            ops.append(conv_op(conv_name, filters, kernel, "relu", prev))
             ops.append({"type": "batchnorm", "inputs": [conv_name], "output": conv_name + "_bn",
                         "layer": None, "role": f"bn_after_{conv_name}",
                         "producer": conv_name})
+            channels[conv_name + "_bn"] = channels[conv_name]
             prev = conv_name + "_bn"
 
     ops.append({"type": "concat", "inputs": ["harm2a_bn", "harm2b_bn"], "output": "concat",
                 "layer": None, "axis": -1})
+    channels["concat"] = channels["harm2a_bn"] + channels["harm2b_bn"]
 
     prev = "concat"
     for conv_name, filters, kernel, activation in (
@@ -91,17 +110,14 @@ def build_op_list(model):
         ("conv8", 64, (3, 3), "relu"),
         ("distribution", 8, (360, 1), "relu"),
     ):
-        ops.append({"type": "conv2d", "inputs": [prev], "output": conv_name,
-                    "layer": conv_name, "activation": activation,
-                    "filters": filters, "kernel": list(kernel)})
+        ops.append(conv_op(conv_name, filters, kernel, activation, prev))
         ops.append({"type": "batchnorm", "inputs": [conv_name], "output": conv_name + "_bn",
                     "layer": None, "role": f"bn_after_{conv_name}",
                     "producer": conv_name})
+        channels[conv_name + "_bn"] = channels[conv_name]
         prev = conv_name + "_bn"
 
-    ops.append({"type": "conv2d", "inputs": [prev], "output": "squishy",
-                "layer": "squishy", "activation": "sigmoid",
-                "filters": 1, "kernel": [1, 1]})
+    ops.append(conv_op("squishy", 1, (1, 1), "sigmoid", prev))
     # The trailing Lambda(squeeze axis=3) is dropped here and applied in JS.
     ops.append({"type": "squeeze", "inputs": ["squishy"], "output": "salience",
                 "layer": None, "axis": 3})

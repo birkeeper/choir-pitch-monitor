@@ -35,9 +35,36 @@ export const SEGMENT_OVERLAP = 1.0;        // [s]
 // lives in worker/, so a plain './model/' would resolve to worker/model/ there and to model/ on the
 // main thread; anchoring it here makes it the same directory for both.
 export const MODEL_URL = new URL('./model/', import.meta.url).href;
-// predict_on_audio.py uses 2000 for model3, sized for a workstation. Browser GPUs need far less in
-// flight at once: at 256 frames the largest intermediate is 64 x 360 x 256 floats = 23.6 MB.
-export const INFERENCE_CHUNK_FRAMES = 256;
+
+// The tensorflowjs_converter output, which is what the app runs. Its time axis is frozen at the
+// width it was exported with, so GRAPH_MODEL_FRAMES must match; the loader reads the real value
+// out of the graph and only falls back to this when the axis has been relaxed to dynamic (see
+// tools/relax_graph_time_axis.py).
+export const GRAPH_MODEL_URL =
+    new URL('./model/exp3multif0_tfjs/model.json', import.meta.url).href;
+export const GRAPH_MODEL_FRAMES = 50;
+// Frames of audio pushed through the network per dispatch. predict_on_audio.py uses 2000 for
+// model3, sized for a workstation; browser GPUs need far less in flight at once.
+//
+// This is a preference, not a guarantee: worker/model.js clamps it down if the GPU's reported
+// WEBGL_MAX_TEXTURE_SIZE cannot accommodate it (see planForDevice). Chunking never changes the
+// result -- chunks overlap by the model's time receptive field and the overlap is trimmed -- so
+// the value is purely a latency/throughput knob.
+//
+// Offline favours throughput: each chunk recomputes 2 * 12 frames of context it then discards, so
+// small chunks waste a large fraction of the work (24/32 = 75% at the live setting, 24/256 = 9%
+// here).
+export const CHUNK_FRAMES_OFFLINE = 256;
+// Live favours latency: a frame cannot be emitted until the last frame of its chunk has features,
+// so the chunk adds (frames - 1) * 11.61 ms on top of the CQT window lookahead (1.49 s) and the
+// model's own 12-frame lookahead (139 ms).
+export const CHUNK_FRAMES_LIVE = 32;
+
+// Fraction of the theoretical texture budget to actually use. The estimate of the texture size
+// TF.js will request is derived from its source rather than measured, and rounds in a few places
+// (nearestLargerEven, two ceils), so the last few percent are not worth claiming: at
+// 256 frames on a 16384-limit GPU the unsplit `distribution` layer lands within 1% of the cap.
+export const TEXTURE_SAFETY = 0.8;
 export const DEFAULT_THRESHOLD = 0.5;      // model3's threshold in predict_on_audio.py
 
 // --- Tuning -------------------------------------------------------------------------------------
