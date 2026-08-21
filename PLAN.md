@@ -373,19 +373,32 @@ correctness, so there is no threshold to steer by:
 | 23040 | 20160 | 45 -- wrong |
 | 1536 | 100800 | 466 -- correct, but 74 ms/frame |
 
-### The correctness fix is expensive
+### The correctness fix cost 3.5x until the right flag was found
 
-| path | ms/frame | real-time factor |
-|---|---|---|
-| im2col (wrong output) | ~19 | 0.62x |
-| `WEBGL_CONV_IM2COL=false` (correct) | 131 | 0.09x |
+Disabling im2col drops TF.js from the *packed* im2col+GEMM path to `Conv2DProgram`, the **unpacked**
+direct convolution -- one float per RGBA texel instead of four, and each output recomputing its
+whole receptive window instead of reusing loaded values across outputs the way a tiled matmul does.
+This architecture is punished unusually hard by that: `harm1`/`harm2` are 70x3 over 32 channels
+(6720 taps per output) and `distribution` is 360x1 over 64 channels (23040 taps).
 
-At 0.09x a four-minute recording needs roughly 45 minutes of inference, so **WebGL is a correctness
-fallback, not a usable configuration**. WebGPU does not use this code path at all and is the
-preferred backend for both reasons; it could not be measured here because headless Chrome cannot
-obtain a WebGPU adapter on this machine. Establishing whether WebGPU is both correct and fast in a
-real browser tab is the next thing that matters, and `tests/test-backend-parity.html` exists to
-answer it.
+`WEBGL_EXP_CONV=true` selects `Conv2DPackedProgram` instead -- a *packed* direct convolution, which
+avoids im2col while keeping packing. TF.js consults it before `WEBGL_CONV_IM2COL`, so it takes
+precedence for every convolution in this model (all stride 1, channels-last). Both flags are set in
+`worker/backend.js`: EXP_CONV for speed, `CONV_IM2COL=false` so anything falling through lands on the
+correct unpacked path rather than the broken one.
+
+| path | ms/frame | real-time | correct |
+|---|---|---|---|
+| im2col (default) | ~47 | 0.25x | no |
+| `CONV_IM2COL=false` | 188 | 0.06x | yes |
+| `EXP_CONV=true` | **54** | **0.20x** | yes |
+
+So correctness now costs essentially nothing against the broken path. A four-minute recording takes
+about 18 minutes end to end, still short of usable but no longer absurd. Two levers remain: relaxing
+the graph's frozen 50-frame axis would recover most of the 1.92x overlap waste (~28 ms/frame), and
+WebGPU avoids this code path entirely. WebGPU could not be measured here because headless Chrome
+cannot obtain an adapter on this machine; `tests/test-backend-parity.html` exists to answer that in
+a real browser tab.
 
 ### Verified end to end
 
@@ -397,9 +410,9 @@ against Python's 469 -- the same 466 the interpreter produces on the CPU backend
 - **Cents resolution** is 20 cents unless sub-bin refinement is enabled (§2.4).
 - **Frequency range** is C1–C7 (32.7–2068.8 Hz), fixed by the model. Notes above C7 are invisible;
   in practice this is not a constraint for choral repertoire.
-- **Analysis speed** is far worse than §2.1 predicted, because the only correct WebGL configuration
-  is also the slow one: 0.09x real-time, so a 4-minute recording takes about 45 minutes. See §7a.
-  This is the main open problem, and WebGPU is the most likely way out.
+- **Analysis speed** is worse than §2.1 predicted: 0.20x real-time on WebGL with the correct
+  convolution path, so a 4-minute recording takes about 18 minutes. See §7a. Still the main open
+  problem; WebGPU and relaxing the graph's frozen time axis are the two ways out.
 - **Unisons and octaves** partially merge into a single detection — inherent to single-microphone
   multi-F0, unchanged from the earlier discussion.
 - **No voice-part attribution.** By design (decision 1); the conductor maps notes to parts.
