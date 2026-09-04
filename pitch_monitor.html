@@ -55,7 +55,7 @@
         </div>
         <div class="d-flex flex-row flex-wrap align-items-center mb-2 w-100">
             <label class="setting ms-2">salience threshold
-                <input type="number" id="threshold" value="0.50" min="0.05" max="0.95" step="0.05">
+                <input type="number" id="threshold" value="0.30" min="0.05" max="0.95" step="0.05">
             </label>
             <label class="setting ms-2">in-tune band lower
                 <input type="number" id="bandLower" value="-20" min="-50" max="0" step="1"> ¢
@@ -83,12 +83,13 @@
         <pre id="summary" class="mx-2 mb-2">No analysis yet.</pre>
         <div class="d-flex flex-row flex-wrap align-items-center mb-2">
             <button id="downloadDetail" class="button-label ms-2" disabled>Download CSV (per detection)</button>
-            <button id="downloadMultif0" class="button-label ms-2" disabled>Download multif0 TSV (reference format)</button>
+            <button id="downloadFrames" class="button-label ms-2" disabled>Download TSV (one row per frame)</button>
         </div>
         <p class="mx-2 small text-secondary">
             The per-detection CSV has one row per detected pitch with its deviation from equal
-            temperament. The multif0 TSV matches <code>utils_train.save_multif0_output</code>, so it
-            can be diffed directly against <code>predict_on_audio.py</code>.
+            temperament. The TSV is the same detections in wide form &mdash; one row per frame,
+            <code>time</code> followed by the frequencies sounding in that frame &mdash; which reads
+            directly as a dense time series.
         </p>
     </div>
 

@@ -1,14 +1,14 @@
 // App shell: load a recording, run the analysis worker, export CSV.
 //
 // This is the first milestone from PLAN.md section 9 -- deliberately without pitch visualisation.
-// The point is to get trustworthy numbers out of the pipeline and into a file that can be compared
-// against predict_on_audio.py and inspected on real rehearsal recordings. The piano roll and the
-// live meters come once the numbers are trusted.
+// The point is to get trustworthy numbers out of the pipeline and into a file that can be inspected
+// on real rehearsal recordings. The piano roll and the live meters come once the numbers are
+// trusted.
 
 import { AudioSource } from './js/audio-source.js';
-import { extractPeaks, ensembleDrift, peaksToCsv, peaksToMultif0Csv } from './worker/notes.js';
+import { extractPeaks, ensembleDrift, peaksToCsv, peaksToFrameCsv } from './worker/notes.js';
 import {
-    SAMPLE_RATE, FRAME_RATE, CENTS_PER_BIN, N_BINS, REFERENCE_A4,
+    SAMPLE_RATE, FRAME_RATE, CENTS_PER_BIN, N_BINS, REFERENCE_A4, DEFAULT_THRESHOLD,
 } from './constants.js';
 
 const VERSION = 'v0.1';
@@ -25,7 +25,7 @@ const elements = {
     audio: document.getElementById('audioElement'),
     summary: document.getElementById('summary'),
     downloadDetail: document.getElementById('downloadDetail'),
-    downloadMultif0: document.getElementById('downloadMultif0'),
+    downloadFrames: document.getElementById('downloadFrames'),
     threshold: document.getElementById('threshold'),
     bandLower: document.getElementById('bandLower'),
     bandUpper: document.getElementById('bandUpper'),
@@ -44,24 +44,18 @@ let worker = null;
 let analysing = false;
 
 /**
- * Describe how the model had to be adapted to this GPU.
+ * Describe how the model is being run.
  *
- * Worth showing rather than hiding: the chunk width and the kernel splitting both come from the
- * GPU's reported texture limit, both affect throughput, and both differ between machines -- so a
- * timing figure is not comparable across machines without them.
+ * The window size and the trimmed overlap are fixed by the converted graph rather than chosen, but
+ * they set how much redundant work each analysis does, so they are worth showing next to a timing.
  */
 function describePlan(backend, plan) {
     if (!plan) { return ''; }
-    const parts = [`chunk ${plan.chunkFrames} frames`];
-    if (plan.maxTextureSize) {
-        parts.push(`max texture ${plan.maxTextureSize}`);
-    }
-    const splits = Object.entries(plan.splits ?? {});
-    parts.push(splits.length
-        ? `${splits.length} layer(s) split to fit: `
-            + splits.map(([name, rows]) => `${name}/${rows}`).join(', ')
-        : 'no layers split');
-    return `Device plan (${backend}): ${parts.join(', ')}`;
+    const overlap = plan.usableFrames
+        ? (plan.windowFrames / plan.usableFrames).toFixed(2)
+        : '?';
+    return `Window ${plan.windowFrames} frames (${plan.usableFrames} usable after trimming `
+        + `${plan.trimFrames} each side, ${overlap}x overhead), ${plan.bins} bins`;
 }
 
 function alertUser(message, variant = 'danger') {
@@ -93,9 +87,7 @@ function ensureWorker() {
     return worker;
 }
 
-// The two stages have very different costs, so a single bar would stall visibly. Feature
-// extraction and inference each get a share proportional to roughly what they cost.
-const STAGE_SHARE = { features: 0.4, inference: 0.6 };
+// Inference is the only stage; the model computes its own CQT internally.
 
 async function analyse(file) {
     if (analysing) { return; }
@@ -105,7 +97,7 @@ async function analyse(file) {
         session = null;
     }
     elements.downloadDetail.disabled = true;
-    elements.downloadMultif0.disabled = true;
+    elements.downloadFrames.disabled = true;
     elements.summary.textContent = 'Decoding...';
     elements.audio.classList.add('d-none');
 
@@ -143,18 +135,15 @@ async function analyse(file) {
                 device = data.plan;
                 elements.summary.textContent =
                     `Backend: ${data.backend}\n`
-                    + `Model: ${data.source.architecture} / ${data.source.weights}\n`
+                    + `Model: ${data.source.architecture}\n`
                     + `${describePlan(data.backend, data.plan)}\n`
                     + `Analysing ${formatDuration(source.duration)} of audio...`;
                 break;
 
             case 'PROGRESS': {
-                const offset = data.stage === 'inference' ? STAGE_SHARE.features : 0;
-                const share = STAGE_SHARE[data.stage] ?? 0;
-                const fraction = offset + share * (data.done / data.total);
+                const fraction = data.done / data.total;
                 const elapsed = (performance.now() - started) / 1000;
-                setProgress(fraction, `${data.stage} ${Math.round(100 * fraction)}% `
-                    + `(${elapsed.toFixed(0)}s)`);
+                setProgress(fraction, `${Math.round(100 * fraction)}% (${elapsed.toFixed(0)}s)`);
                 break;
             }
 
@@ -208,8 +197,8 @@ async function analyse(file) {
 /**
  * Re-derive notes from the cached salience map and update the summary.
  *
- * Every analysis setting feeds only this function, which is why changing one is instant: the HCQT
- * and the network are not involved.
+ * Every analysis setting feeds only this function, which is why changing one is instant: the
+ * network is not involved.
  */
 function refresh() {
     if (!session) { return; }
@@ -230,14 +219,14 @@ function refresh() {
     window.__session = session;
 
     elements.downloadDetail.disabled = peaks.count === 0;
-    elements.downloadMultif0.disabled = false;
+    elements.downloadFrames.disabled = false;
     elements.summary.textContent = summarise(session, peaks, drift, options);
 }
 
 function readSettings() {
     const driftWindowSeconds = clamp(Number(elements.driftWindow.value) || 2, 0.2, 10);
     return {
-        threshold: clamp(Number(elements.threshold.value) || 0.5, 0.01, 0.99),
+        threshold: clamp(Number(elements.threshold.value) || DEFAULT_THRESHOLD, 0.01, 0.99),
         bandLower: clamp(Number(elements.bandLower.value) || -20, -50, 0),
         bandUpper: clamp(Number(elements.bandUpper.value) || 20, 0, 50),
         refine: elements.refine.checked,
@@ -284,13 +273,8 @@ function summarise(session, peaks, drift, options) {
             + `at ${FRAME_RATE.toFixed(2)} fps`,
         '',
         `Backend     ${session.backend}`,
-        ...(device ? [`Device      ${describePlan(session.backend, device).replace(
-            /^Device plan \([^)]*\): /, '')}`] : []),
-        `Timing      features ${timing.features.toFixed(1)} s `
-            + `(${timing.featureRealTimeFactor.toFixed(2)}x real-time), `
-            + `inference ${timing.inference.toFixed(1)} s `
-            + `(${timing.inferenceRealTimeFactor.toFixed(2)}x)`,
-        `            total ${timing.total.toFixed(1)} s `
+        ...(device ? [`Model       ${describePlan(session.backend, device)}`] : []),
+        `Timing      ${timing.total.toFixed(1)} s `
             + `-> ${timing.realTimeFactor.toFixed(2)}x real-time`,
         '',
         `Detections  ${peaks.count} peaks at threshold ${options.threshold.toFixed(2)} `
@@ -309,8 +293,9 @@ function summarise(session, peaks, drift, options) {
         '',
         options.refine
             ? `Resolution  sub-bin refinement on`
-            : `Resolution  sub-bin refinement OFF - the grid is ${CENTS_PER_BIN} cents per bin, so `
-              + `deviations\n            can only take the values 0, +/-20, +/-40 cents`,
+            : `Resolution  sub-bin refinement OFF - the grid is `
+              + `${CENTS_PER_BIN.toFixed(1)} cents per bin and aligned to equal temperament, so\n`
+              + `            deviations can only take the values 0 and +/-${CENTS_PER_BIN.toFixed(1)} cents`,
     ].join('\n');
 }
 
@@ -368,10 +353,10 @@ elements.downloadDetail.addEventListener('click', () => {
         peaksToCsv(session.peaks, session.drift, session.options));
 });
 
-elements.downloadMultif0.addEventListener('click', () => {
+elements.downloadFrames.addEventListener('click', () => {
     if (!session?.peaks) { return; }
-    download(`${baseName()}_multif0.tsv`,
-        peaksToMultif0Csv(session.peaks, session.frames));
+    download(`${baseName()}_frames.tsv`,
+        peaksToFrameCsv(session.peaks, session.frames));
 });
 
 if ('serviceWorker' in navigator) {

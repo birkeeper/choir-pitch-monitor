@@ -2,9 +2,9 @@
 //
 // Simpler than the one in Choir-practice-midi-player: there is no settings store and no range-
 // request synthesis here, just static assets. The assets are worth caching aggressively though --
-// the model weights and filter bank are about 5.3 MB, and TF.js another 1 MB.
+// the model is about 0.85 MB and TF.js another 1.1 MB.
 
-const CACHE_NAME = "choir-pitch-monitor-v0.2";
+const CACHE_NAME = "choir-pitch-monitor-v0.3";
 
 // Everything needed to run offline. The model assets are listed explicitly because a cold start
 // without them fails in a confusing way (the worker loads, then cannot fetch its weights).
@@ -18,21 +18,12 @@ const PRECACHE = [
     "./icons/pitchmonitor-icon.svg",
     "./js/audio-source.js",
     "./worker/analysis-worker.js",
-    "./worker/hcqt.js",
-    "./worker/fft.js",
-    "./worker/model.js",
-    "./worker/graph-model.js",
+    "./worker/salience-model.js",
     "./worker/backend.js",
-    "./worker/device-plan.js",
     "./worker/notes.js",
     "./libraries/tfjs/tfjs.js",
-    "./model/manifest.json",
-    "./model/weights.bin",
-    "./model/filters.json",
-    "./model/filters.bin",
-    "./model/exp3multif0_tfjs/model.json",
-    "./model/exp3multif0_tfjs/group1-shard1of2.bin",
-    "./model/exp3multif0_tfjs/group1-shard2of2.bin",
+    "./model/nmp_salience_tfjs/model.json",
+    "./model/nmp_salience_tfjs/group1-shard1of1.bin",
 ];
 
 self.addEventListener("install", (event) => {

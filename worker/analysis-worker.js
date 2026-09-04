@@ -1,42 +1,33 @@
 // Analysis worker: mono 22050 Hz samples in, salience map out.
 //
-// Everything expensive lives here so the page stays responsive. The worker deliberately stops at
-// the salience map rather than returning finished notes: peak picking is cheap, and keeping it on
-// the main thread means the threshold, the tuning band and sub-bin refinement can be changed and
-// re-exported instantly, without touching the GPU again. That matters because inference is by far
-// the slowest stage (see PLAN.md section 2.1).
+// The NMP model computes its own CQT and harmonic stacking internally, so there is no feature
+// extraction stage here -- the worker hands raw audio to the model and nothing else.
+//
+// It deliberately stops at the salience map rather than returning finished notes: peak picking is
+// cheap, and keeping it on the main thread means the threshold, the tuning band and sub-bin
+// refinement can be changed and re-exported instantly, without touching the GPU again.
 
-import { HcqtExtractor } from './hcqt.js';
-import { GraphSalienceModel } from './graph-model.js';
+import { SalienceModel } from './salience-model.js';
 import { selectBackend } from './backend.js';
-import { MODEL_URL, SAMPLE_RATE, DEFAULT_THRESHOLD } from '../constants.js';
+import { SAMPLE_RATE, DEFAULT_THRESHOLD } from '../constants.js';
 
-let extractor = null;
 let model = null;
 let backend = null;
 let cancelled = false;
 
 async function ensureLoaded() {
-    if (extractor && model) { return; }
-    post({ type: 'STATUS', message: 'Loading model and filter bank...' });
+    if (model) { return; }
+    post({ type: 'STATUS', message: 'Loading model...' });
     backend = await selectBackend();
-    // Both are static assets; fetching them concurrently saves a round trip on a cold cache.
-    [extractor, model] = await Promise.all([
-        HcqtExtractor.load(MODEL_URL),
-        GraphSalienceModel.load(),
-    ]);
+    model = await SalienceModel.load();
     post({
         type: 'READY',
         backend,
         source: {
-            architecture: 'exp3multif0 (tensorflowjs_converter graph model)',
-            weights: 'model/exp3multif0_tfjs/',
+            architecture: 'NMP salience (Bittner et al. 2022)',
+            weights: 'model/nmp_salience_tfjs/',
         },
         defaultThreshold: DEFAULT_THRESHOLD,
-        maxWindow: extractor.maxWindow,
-        maxWindowSeconds: extractor.maxWindow / SAMPLE_RATE,
-        // How the model was adapted to this GPU's texture limits; worth surfacing because it
-        // affects throughput and differs between machines.
         plan: model.plan,
     });
 }
@@ -59,40 +50,28 @@ self.onmessage = async (event) => {
         try {
             await ensureLoaded();
 
-            const featureStart = performance.now();
-            const features = await extractor.extract(
+            const started = performance.now();
+            const result = await model.analyse(
                 samples,
-                (done, total) => post({ type: 'PROGRESS', stage: 'features', done, total }),
-                () => cancelled,
-            );
-            if (!features) { post({ type: 'CANCELLED' }); return; }
-            const featureSeconds = (performance.now() - featureStart) / 1000;
-
-            const inferenceStart = performance.now();
-            const salience = await model.predict(
-                features.mag, features.dphase, features.frames,
                 (done, total) => post({ type: 'PROGRESS', stage: 'inference', done, total }),
                 () => cancelled,
             );
-            if (!salience) { post({ type: 'CANCELLED' }); return; }
-            const inferenceSeconds = (performance.now() - inferenceStart) / 1000;
+            if (!result) { post({ type: 'CANCELLED' }); return; }
+            const seconds = (performance.now() - started) / 1000;
 
             const audioSeconds = samples.length / SAMPLE_RATE;
             post({
                 type: 'RESULT',
-                salience: salience.buffer,
-                frames: features.frames,
+                salience: result.salience.buffer,
+                frames: result.frames,
                 audioSeconds,
                 backend,
                 timing: {
-                    features: featureSeconds,
-                    inference: inferenceSeconds,
-                    total: featureSeconds + inferenceSeconds,
-                    featureRealTimeFactor: audioSeconds / featureSeconds,
-                    inferenceRealTimeFactor: audioSeconds / inferenceSeconds,
-                    realTimeFactor: audioSeconds / (featureSeconds + inferenceSeconds),
+                    inference: seconds,
+                    total: seconds,
+                    realTimeFactor: audioSeconds / seconds,
                 },
-            }, [salience.buffer]);
+            }, [result.salience.buffer]);
         } catch (error) {
             post({ type: 'ERROR', message: error.message, stack: error.stack });
         }

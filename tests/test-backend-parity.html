@@ -18,23 +18,24 @@
 <div class="container-xl py-3">
     <h4>Backend parity</h4>
     <p class="muted">
-        Runs the same real HCQT features through the model on every available TF.js backend and
-        compares them against the CPU backend, which is the reference. This is the test that catches
-        a backend computing the model <em>wrongly</em> rather than merely slowly &mdash; a failure
-        mode that a small synthetic fixture does not trigger, and that produced a salience map
-        capped at 0.024 instead of 0.99 on WebGL with its default settings.
+        Runs the same audio through the salience model on every available TF.js backend and compares
+        the results against the CPU backend, which is the reference. This catches a backend computing
+        the model <em>wrongly</em> rather than merely slowly &mdash; a failure mode that has been
+        observed in TF.js's WebGL convolutions, that produces plausible-looking output rather than an
+        error, and that a small synthetic input does not necessarily trigger.
     </p>
     <p class="muted">
         <strong>Run this in a real browser tab, not headless.</strong> Headless Chrome frequently
-        cannot obtain a WebGPU adapter, so WebGPU goes untested there.
+        cannot obtain a WebGPU adapter, so WebGPU goes untested there. Worth re-running after any
+        change of model, GPU or TF.js version.
     </p>
     <div class="mb-3">
         <button id="run" class="btn btn-primary btn-sm">Run</button>
         <label class="ms-3">
-            <input type="checkbox" id="im2col"> force WEBGL_CONV_IM2COL on (reproduces the bug)
+            <input type="checkbox" id="expconv"> set WEBGL_EXP_CONV (alternative conv path)
         </label>
-        <label class="ms-3">frames
-            <input type="number" id="frames" value="50" min="26" max="2000" step="1"
+        <label class="ms-3">seconds
+            <input type="number" id="seconds" value="2" min="1" max="60" step="1"
                    class="form-control form-control-sm d-inline-block" style="width: 6rem">
         </label>
         <label class="ms-3">clip
@@ -47,13 +48,10 @@
 
 <script type="module">
 import * as tf from '../libraries/tfjs/tfjs.js';
-import { HcqtExtractor } from '../worker/hcqt.js';
-import { GraphSalienceModel } from '../worker/graph-model.js';
+import { SalienceModel } from '../worker/salience-model.js';
 import { extractPeaks } from '../worker/notes.js';
 import { AudioSource } from '../js/audio-source.js';
-import { MODEL_URL, DEFAULT_THRESHOLD, FRAME_RATE } from '../constants.js';
-// Imported for its side effect: it sets WEBGL_CONV_IM2COL=false, which is the fix under test.
-import '../worker/backend.js';
+import { DEFAULT_THRESHOLD, FRAME_RATE, SAMPLE_RATE } from '../constants.js';
 
 const logElement = document.getElementById('log');
 const write = (text, cls) => {
@@ -62,16 +60,6 @@ const write = (text, cls) => {
     line.textContent = text + '\n';
     logElement.appendChild(line);
 };
-
-/** Take the first `limit` frames out of a bin-major [bin][frame][harmonic] buffer. */
-function sliceFrames(source, frames, limit, bins = 360, harmonics = 5) {
-    const out = new Float32Array(bins * limit * harmonics);
-    for (let bin = 0; bin < bins; bin++) {
-        const from = bin * frames * harmonics;
-        out.set(source.subarray(from, from + limit * harmonics), bin * limit * harmonics);
-    }
-    return out;
-}
 
 function summarise(salience) {
     let max = -Infinity;
@@ -85,14 +73,11 @@ function summarise(salience) {
 
 document.getElementById('run').addEventListener('click', async () => {
     logElement.textContent = '';
-    const forceIm2col = document.getElementById('im2col').checked;
-    if (forceIm2col) {
-        tf.env().set('WEBGL_CONV_IM2COL', true);
-        write('WEBGL_CONV_IM2COL forced ON -- expect WebGL to disagree with CPU', 'muted');
+    if (document.getElementById('expconv').checked) {
+        tf.env().set('WEBGL_EXP_CONV', true);
+        write('WEBGL_EXP_CONV set', 'muted');
     }
 
-    // Features are computed once, in plain JS, so every backend gets byte-identical input and any
-    // disagreement is attributable to the backend alone.
     let source;
     const chosen = document.getElementById('clip').files?.[0];
     try {
@@ -104,27 +89,16 @@ document.getElementById('run').addEventListener('click', async () => {
         }
     } catch (error) {
         write(`could not load audio: ${error.message}`, 'bad');
-        write('Pick a clip with the file input, or generate the fixture with '
-            + 'tools/make_reference.py.', 'muted');
         return;
     }
 
-    write(`clip: ${source.info.name}, ${source.duration.toFixed(2)} s`);
-    const extractor = await HcqtExtractor.load(MODEL_URL);
-    const extracted = await extractor.extract(source.samples);
-
-    // The CPU reference is pure JS and by far the slowest participant, so the comparison is capped
-    // to a modest number of frames. The discrepancy this test looks for is a factor of forty, not a
-    // subtle drift, so a short excerpt is ample.
-    const limit = Math.min(extracted.frames,
-        Math.max(26, Number(document.getElementById('frames').value) || 50));
-    const features = limit === extracted.frames ? extracted : {
-        frames: limit,
-        mag: sliceFrames(extracted.mag, extracted.frames, limit),
-        dphase: sliceFrames(extracted.dphase, extracted.frames, limit),
-    };
-    write(`features: ${features.frames} of ${extracted.frames} frames `
-        + `at ${FRAME_RATE.toFixed(2)} fps`);
+    // The CPU backend is pure JS and by far the slowest participant, so the comparison is capped to
+    // a short excerpt by default. The discrepancy this test looks for is gross, not subtle.
+    const limit = Math.max(1, Number(document.getElementById('seconds').value) || 2);
+    const samples = source.samples.subarray(0, Math.min(source.samples.length,
+        Math.round(limit * SAMPLE_RATE)));
+    write(`clip: ${source.info.name}, using ${(samples.length / SAMPLE_RATE).toFixed(2)} s `
+        + `of ${source.duration.toFixed(2)} s`);
     write('');
 
     const results = {};
@@ -144,24 +118,22 @@ document.getElementById('run').addEventListener('click', async () => {
 
         try {
             // Reloaded per backend: weights live on the previous backend's device.
-            const model = await GraphSalienceModel.load();
+            const model = await SalienceModel.load();
             const started = performance.now();
-            const salience = await model.predict(
-                features.mag, features.dphase, features.frames);
+            const { salience, frames } = await model.analyse(samples);
             const elapsed = performance.now() - started;
             model.dispose();
 
             const stats = summarise(salience);
-            const peaks = extractPeaks(salience, features.frames, {
+            const peaks = extractPeaks(salience, frames, {
                 threshold: DEFAULT_THRESHOLD, refine: true,
             });
-            const msPerFrame = elapsed / features.frames;
-            const realTime = (features.frames / FRAME_RATE) / (elapsed / 1000);
+            const realTime = (frames / FRAME_RATE) / (elapsed / 1000);
             results[backend] = { salience, stats, peaks: peaks.count };
 
             write(`${backend.padEnd(7)} max ${stats.max.toFixed(6)}  `
-                + `mean ${stats.mean.toFixed(6)}  peaks ${String(peaks.count).padStart(5)}  `
-                + `${msPerFrame.toFixed(1)} ms/frame  ${realTime.toFixed(2)}x real-time`);
+                + `mean ${stats.mean.toFixed(6)}  peaks ${String(peaks.count).padStart(6)}  `
+                + `${(elapsed / frames).toFixed(1)} ms/frame  ${realTime.toFixed(2)}x real-time`);
         } catch (error) {
             write(`${backend.padEnd(7)} failed: ${error.message}`, 'bad');
         }
@@ -184,7 +156,7 @@ document.getElementById('run').addEventListener('click', async () => {
         }
         // GPU convolutions accumulate in a different order than the CPU reference, so exact
         // equality is not expected; 1e-3 is float32 reassociation noise. The failure this test
-        // exists for is off by two orders of magnitude, not by rounding.
+        // exists for is orders of magnitude larger than that.
         const agrees = maxDifference < 1e-3;
         allAgree = allAgree && agrees;
         write(`${backend} vs cpu: max abs difference ${maxDifference.toExponential(3)}, `

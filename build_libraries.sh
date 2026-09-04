@@ -8,8 +8,8 @@
 # yields one file that a module worker can import directly.
 #
 # Bundles tfjs-core, the backends, and tfjs-converter. The converter package is what provides
-# loadGraphModel, which worker/model.js uses to run the graph model produced by
-# tensorflowjs_converter (model/exp3multif0_tfjs/). tfjs-layers is not needed: the model is a
+# loadGraphModel, which worker/salience-model.js uses to run the graph model produced by
+# tensorflowjs_converter (model/nmp_salience_tfjs/). tfjs-layers is not needed: the model is a
 # graph model, not a layers model.
 
 set -e

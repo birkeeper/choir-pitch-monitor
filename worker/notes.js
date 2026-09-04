@@ -1,25 +1,32 @@
 // Turn the salience map into detected pitches and their deviation from equal temperament.
 //
-// Peak *selection* is an exact port of utils_train.pitch_activations_to_mf0: local maxima along the
-// frequency axis (scipy.signal.argrelmax, strict on both sides, never at an edge) kept when they
-// reach the threshold. That is deliberate -- it keeps the detections directly comparable with
-// predict_on_audio.py.
+// Peak selection follows the recipe in Bittner et al. (2022) section 3, which is the model's own:
+// "Multi-pitch estimates are created by simply peak picking Yp across frequency and retaining all
+// peaks greater than tau_n." A peak is a strict local maximum along the frequency axis -- greater
+// than both neighbours, so a two-bin plateau yields none -- and the first and last bins are never
+// peaks, having only one neighbour each.
 //
-// What is added on top is sub-bin refinement, which changes the frequency assigned to an accepted
-// peak but never which peaks are accepted. It is needed because the salience grid is 60 bins per
-// octave -- exactly 20 cents -- and fmin = 32.7 Hz is C1 to within 0.17 cents, so the grid lands
-// exactly 5 bins per semitone. Reporting bin centres would therefore restrict every deviation to
-// {0, +/-20, +/-40} cents, which is too coarse to judge tuning. See PLAN.md section 2.4.
+// Sub-bin refinement is applied on top. It changes the frequency assigned to an accepted peak but
+// never which peaks are accepted, and it is necessary rather than decorative here: the grid is 3
+// bins per semitone (33.3 cents) and its base, A0 = 27.5 Hz, is an exact equal-tempered pitch, so
+// bin centres alone could only ever report deviations of 0 or +/-33.3 cents. The paper points at the
+// same remedy -- continuous estimates come from "the amplitude values of the estimated f0 bin, and
+// those of its neighboring bins in frequency".
 
 import {
-    N_BINS, F_MIN, BINS_PER_OCTAVE, CENTS_PER_BIN, FRAME_DURATION, REFERENCE_A4,
+    N_BINS, F_MIN, A0_BIN, BINS_PER_OCTAVE, CENTS_PER_BIN, FRAME_DURATION, REFERENCE_A4,
 } from '../constants.js';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
-/** Frequency of a (possibly fractional) salience bin. Mirrors utils.get_freq_grid(). */
+/**
+ * Frequency of a (possibly fractional) salience bin.
+ *
+ * A0 sits on bin A0_BIN rather than bin 0; see the note in constants.js. Omitting that offset makes
+ * every reported pitch a uniform 33.3 cents sharp.
+ */
 export function binToFrequency(bin) {
-    return F_MIN * Math.pow(2, bin / BINS_PER_OCTAVE);
+    return F_MIN * Math.pow(2, (bin - A0_BIN) / BINS_PER_OCTAVE);
 }
 
 /**
@@ -45,8 +52,8 @@ export function nearestNote(frequency, referenceA4 = REFERENCE_A4) {
  */
 function refineOffset(below, at, above) {
     const denominator = below - 2 * at + above;
-    // A flat or inverted neighbourhood has no meaningful vertex. argrelmax guarantees `at` is
-    // strictly greatest, so this only happens on a perfectly symmetric plateau.
+    // A flat or inverted neighbourhood has no meaningful vertex. Peak selection guarantees `at`
+    // is strictly greatest, so this only happens on a perfectly symmetric neighbourhood.
     if (denominator === 0) { return 0; }
     const offset = (0.5 * (below - above)) / denominator;
     if (!Number.isFinite(offset)) { return 0; }
@@ -81,9 +88,9 @@ export function extractPeaks(salience, frames, options = {}) {
     const midiOut = [];
 
     for (let frame = 0; frame < frames; frame++) {
-        // argrelmax never reports the first or last row, so the scan starts at 1 and stops at
-        // N_BINS - 1. Comparisons are strict on both sides, so a two-bin plateau yields no peak --
-        // matching scipy exactly.
+        // The first and last bins are never peaks (only one neighbour each), so the scan runs
+        // from 1 to N_BINS - 1. Comparisons are strict on both sides, so a two-bin plateau yields
+        // no peak.
         for (let bin = 1; bin < N_BINS - 1; bin++) {
             const value = salience[bin * frames + frame];
             if (value < threshold) { continue; }
@@ -226,11 +233,10 @@ export function peaksToCsv(peaks, drift, options = {}) {
 /**
  * Wide-format, tab-delimited: `time<TAB>freq1<TAB>freq2...`, one row per frame.
  *
- * This is the layout utils_train.save_multif0_output writes, so the output of this app can be
- * diffed directly against predict_on_audio.py. Frames with no detections still get a row, as in the
- * reference implementation.
+ * Every frame gets a row, including frames with no detections, so row index and time stay in step
+ * and the file can be read as a dense time series.
  */
-export function peaksToMultif0Csv(peaks, frames) {
+export function peaksToFrameCsv(peaks, frames) {
     const byFrame = Array.from({ length: frames }, () => []);
     for (let i = 0; i < peaks.count; i++) {
         byFrame[peaks.frame[i]].push(peaks.frequency[i]);
