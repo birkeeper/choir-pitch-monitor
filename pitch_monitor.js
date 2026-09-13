@@ -6,7 +6,8 @@
 // trusted.
 
 import { AudioSource } from './js/audio-source.js';
-import { extractPeaks, ensembleDrift, peaksToCsv, peaksToFrameCsv } from './worker/notes.js';
+import { extractPeaks, ensembleDrift, peaksToCsv, peaksToFrameCsv, peaksToFrameNoteCsv }
+    from './worker/notes.js';
 import {
     SAMPLE_RATE, FRAME_RATE, CENTS_PER_BIN, N_BINS, REFERENCE_A4, DEFAULT_THRESHOLD,
 } from './constants.js';
@@ -26,6 +27,7 @@ const elements = {
     summary: document.getElementById('summary'),
     downloadDetail: document.getElementById('downloadDetail'),
     downloadFrames: document.getElementById('downloadFrames'),
+    downloadFrameNotes: document.getElementById('downloadFrameNotes'),
     threshold: document.getElementById('threshold'),
     bandLower: document.getElementById('bandLower'),
     bandUpper: document.getElementById('bandUpper'),
@@ -98,6 +100,7 @@ async function analyse(file) {
     }
     elements.downloadDetail.disabled = true;
     elements.downloadFrames.disabled = true;
+    elements.downloadFrameNotes.disabled = true;
     elements.summary.textContent = 'Decoding...';
     elements.audio.classList.add('d-none');
 
@@ -220,6 +223,7 @@ function refresh() {
 
     elements.downloadDetail.disabled = peaks.count === 0;
     elements.downloadFrames.disabled = false;
+    elements.downloadFrameNotes.disabled = peaks.count === 0;
     elements.summary.textContent = summarise(session, peaks, drift, options);
 }
 
@@ -357,6 +361,12 @@ elements.downloadFrames.addEventListener('click', () => {
     if (!session?.peaks) { return; }
     download(`${baseName()}_frames.tsv`,
         peaksToFrameCsv(session.peaks, session.frames));
+});
+
+elements.downloadFrameNotes.addEventListener('click', () => {
+    if (!session?.peaks) { return; }
+    download(`${baseName()}_frame_notes.csv`,
+        peaksToFrameNoteCsv(session.peaks, session.frames, session.options));
 });
 
 if ('serviceWorker' in navigator) {

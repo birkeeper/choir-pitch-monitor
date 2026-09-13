@@ -90,7 +90,7 @@ export const WINDOW_TRIM_FRAMES = 15;
 //   0.20      3.03         39%
 //   0.30      1.51         51%
 //   0.50      0.25         58%
-export const DEFAULT_THRESHOLD = 0.3;
+export const DEFAULT_THRESHOLD = 0.17;
 
 // --- Tuning -------------------------------------------------------------------------------------
 
