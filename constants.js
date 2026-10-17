@@ -32,7 +32,7 @@ export const FRAME_DURATION = HOP_LENGTH / SAMPLE_RATE;    // 11.61 ms
 
 // Paper section 3: the CQT has "3 bins per semitone", and Yp "has a resolution of 3 bins per
 // semitone" (Yn and Yo have 1).
-export const BINS_PER_SEMITONE = 3;
+export const BINS_PER_SEMITONE = 5;
 export const BINS_PER_OCTAVE = BINS_PER_SEMITONE * 12;     // 36
 export const CENTS_PER_BIN = 1200 / BINS_PER_OCTAVE;       // 33.333...
 
@@ -64,7 +64,7 @@ export const A0_BIN = 1;
 // --- Model --------------------------------------------------------------------------------------
 
 export const MODEL_URL =
-    new URL('./model/nmp_salience_tfjs/model.json', import.meta.url).href;
+    new URL('./model/exp3multif0_tfjs/model.json', import.meta.url).href;
 
 // From the graph's input signature: [1, 43844, 1] raw mono audio. Equals 2 * 22050 - 256, i.e. the
 // paper's two seconds less one hop.
