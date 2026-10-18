@@ -1,5 +1,7 @@
 %%D = csvread('~/Downloads/arcade_tja_frame_notes.csv', 1, 0, "emptyvalue", NaN);
-D = csvread('~/Downloads/arcade_tja_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
+%%D = csvread('~/Downloads/arcade_tja_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
+%%D = csvread('~/Downloads/alles_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
+D = csvread('~/Downloads/alles_2_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
 t = D(:,1);
 C = D(:, 4:3:end);                      % the eight cents columns
 M = ~isnan(C);               % occupied slots (check how empties land)
@@ -17,7 +19,7 @@ R     = hypot(X, Y) ./ max(n, eps);
 % Estimates are made at the recorded frame times t (256 samples at 22050 Hz, ~11.6 ms hop), with
 % trailing windows: each estimate only uses the current frame and the past, so it is causal.
 % The cost is a delay of about half the window (W/2 and WL/2 s) relative to a centred window.
-W    = 1;                    % s short window: detail, sigma and voice count
+W    = 3;                    % s short window: detail, sigma and voice count
 WL   = 8;                    % s long window: trend; the 20-cent bins need seconds of averaging
 Rmin = 0.0; %0.1;                  % below this long-window concentration the trend is held
 RminS = 0.0; %0.3;                 % below this short-window concentration the detail is noise
@@ -83,16 +85,20 @@ drift_u(unreliable) = NaN;
 % window's notes are folded onto one octave (1200 cents above C) and the template is slid over
 % them; the best shift is the drift. Nothing is accumulated, so a bad window only spoils itself.
 % A semitone shift is easy to reject (only 2 of 7 notes shared), but a whole-tone shift shares 5
-% of 7 and can score almost as well, so the search is kept close to the previous estimate. That
-% keeps it causal: each estimate uses only the past window and the previous estimate.
+% of 7 and can score almost as well. So the best shift over the whole octave is taken, and if it
+% lies more than jumpK from the previous estimate it is not followed; the previous one is kept.
+% Unlike a search limited to +/-jumpK, a window whose best fit is a whole tone off cannot pull
+% the estimate part of the way there, so it cannot creep away in several steps at the limit.
+% Causal: each estimate uses only the past window and the previous estimate.
 hopK     = 0.5;                  % s between key fits
 WK       = 2;                    % s causal window; needs several chords to pin down the key
 sigK     = 20;                   % cents width of each template note
 startK   = 100;                  % cents; the choir is assumed to start within this of pitch
-jumpK    = 50;                   % cents; largest change allowed between consecutive fits
+jumpK    = 100;                  % cents; a best fit farther than this from the previous is ignored
 minDetK  = 20;                   % fewer detections in the window: no fit, previous one is kept
-scaleK   = [0 200 400 500 700 900 1100];   % C D E F G A B, in cents above C
-%scaleK   = [0 100 200 300 400 500 600 700 800 900 1000 1100];   % semitone scale
+%scaleK   = [0 200 400 500 700 900 1100];   % C D E F G A B, in cents above C
+%scaleK   = [0 100 200 300 400 500 600 700 800 900 1000 1100];   % semitone scale, in cents above C
+scaleK   = [100 300 400 600 800 900 1100];   % C# D# E F# G# A B, in cents above C
 
 F = D(:, 2:3:end);                       % the eight f0 columns
 [slot, rowK] = find(M.');                % row-major, so detections come out in time order
@@ -118,15 +124,17 @@ for i = 1:numel(tk)
   h = accumarray(centK(lo:hi) + 1, 1, [1200, 1]);
   score = real(ifft(fft(h) .* FTK));    % score(k+1): histogram shifted by shiftK(k+1) cents
   if isnan(prev)
-    ok = abs(shiftK) <= startK;
-  else
-    ok = abs(mod(shiftK - prev + 600, 1200) - 600) <= jumpK;
+    score(abs(shiftK) > startK) = -Inf;
   end
-  score(~ok) = -Inf;
   [~, best] = max(score);
   s = shiftK(best);
   if ~isnan(prev)
-    s = prev + mod(s - prev + 600, 1200) - 600;   % continue past +/-600 instead of wrapping
+    jump = mod(s - prev + 600, 1200) - 600;       % shortest way from the previous fit
+    if abs(jump) > jumpK
+      s = prev;                                   % best fit too far away: keep the previous one
+    else
+      s = prev + jump;                            % continue past +/-600 instead of wrapping
+    end
   end
   key_drift(i) = s;
   prev = s;
