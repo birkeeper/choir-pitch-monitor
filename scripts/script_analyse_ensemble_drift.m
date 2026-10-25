@@ -2,6 +2,11 @@
 %%D = csvread('~/Downloads/arcade_tja_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
 %%D = csvread('~/Downloads/alles_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
 D = csvread('~/Downloads/alles_2_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
+
+%%scaleK   = [0 200 400 500 700 900 1100];   % C D E F G A B, in cents above C
+scaleK   = [0 100 200 300 400 500 600 700 800 900 1000 1100];   % semitone scale, in cents above C
+%%scaleK   = [100 300 400 600 800 900 1100];   % C# D# E F# G# A B, in cents above C
+
 t = D(:,1);
 C = D(:, 4:3:end);                      % the eight cents columns
 M = ~isnan(C);               % occupied slots (check how empties land)
@@ -19,7 +24,7 @@ R     = hypot(X, Y) ./ max(n, eps);
 % Estimates are made at the recorded frame times t (256 samples at 22050 Hz, ~11.6 ms hop), with
 % trailing windows: each estimate only uses the current frame and the past, so it is causal.
 % The cost is a delay of about half the window (W/2 and WL/2 s) relative to a centred window.
-W    = 3;                    % s short window: detail, sigma and voice count
+W    = 2;                    % s short window: detail, sigma and voice count
 WL   = 8;                    % s long window: trend; the 20-cent bins need seconds of averaging
 Rmin = 0.0; %0.1;                  % below this long-window concentration the trend is held
 RminS = 0.0; %0.3;                 % below this short-window concentration the detail is noise
@@ -84,21 +89,25 @@ drift_u(unreliable) = NaN;
 % sharps, so it is C major or A minor; both use the white keys, so one template serves. Every
 % window's notes are folded onto one octave (1200 cents above C) and the template is slid over
 % them; the best shift is the drift. Nothing is accumulated, so a bad window only spoils itself.
-% A semitone shift is easy to reject (only 2 of 7 notes shared), but a whole-tone shift shares 5
-% of 7 and can score almost as well. So the best shift over the whole octave is taken, and if it
-% lies more than jumpK from the previous estimate it is not followed; the previous one is kept.
-% Unlike a search limited to +/-jumpK, a window whose best fit is a whole tone off cannot pull
-% the estimate part of the way there, so it cannot creep away in several steps at the limit.
-% Causal: each estimate uses only the past window and the previous estimate.
+% Each fit is accepted only if the checks pass; otherwise the previous fit is kept:
+%  1. Continuity: the shift is searched within +/-jumpK of the previous fit, which rules out a
+%     jump to a fifth (6 of 7 notes shared) however well it scores.
+%  2. Real peak: the best shift in that range must be a peak of this window's score curve, not
+%     its edge. At the edge the curve is still rising, so the window prefers a shift outside the
+%     range, and following it partway would let the fit creep away in steps.
+%  3. Clear winner: shifts a semitone and a whole tone away (outside the range, so never chosen)
+%     must score clearly lower. If one scores nearly as well, the window cannot tell which
+%     semitone the choir is in, e.g. a single note after a pause, or too few chords. Then the
+%     candidate (best or near-equal rival) nearest to the previous fit is taken.
+% Causal: each fit uses only the past window's scores and the previous fit.
 hopK     = 0.5;                  % s between key fits
-WK       = 2;                    % s causal window; needs several chords to pin down the key
+WK       = 8;                    % s causal window; needs several chords to pin down the key
 sigK     = 20;                   % cents width of each template note
 startK   = 100;                  % cents; the choir is assumed to start within this of pitch
-jumpK    = 100;                  % cents; a best fit farther than this from the previous is ignored
-minDetK  = 20;                   % fewer detections in the window: no fit, previous one is kept
-%scaleK   = [0 200 400 500 700 900 1100];   % C D E F G A B, in cents above C
-%scaleK   = [0 100 200 300 400 500 600 700 800 900 1000 1100];   % semitone scale, in cents above C
-scaleK   = [100 300 400 600 800 900 1100];   % C# D# E F# G# A B, in cents above C
+jumpK    = 50;                   % cents; search range around the previous fit
+qK       = 0.85;                 % a rival scoring this fraction of the best makes the window ambiguous
+compK    = 30;                   % cents; rivals are looked for within this of best +/-100 and +/-200
+minDetK  = 100;                   % fewer detections in the window: no fit, previous one is kept
 
 F = D(:, 2:3:end);                       % the eight f0 columns
 [slot, rowK] = find(M.');                % row-major, so detections come out in time order
@@ -115,6 +124,8 @@ shiftK = [0:599, -600:-1]';              % shift belonging to each correlation l
 
 tk = (t(1) + WK : hopK : t(end))';
 key_drift = NaN(size(tk));
+score_ = NaN(size(tk));
+prev_ = NaN(size(tk));
 prev = NaN;
 lo = 1; hi = 0;
 for i = 1:numel(tk)
@@ -123,21 +134,46 @@ for i = 1:numel(tk)
   if hi - lo + 1 < minDetK, continue; end
   h = accumarray(centK(lo:hi) + 1, 1, [1200, 1]);
   score = real(ifft(fft(h) .* FTK));    % score(k+1): histogram shifted by shiftK(k+1) cents
+
+  % 1. Continuity: best shift near the previous fit (near 0 for the first fit).
   if isnan(prev)
-    score(abs(shiftK) > startK) = -Inf;
+    centre = 0;    limit = startK;
+  else
+    centre = prev; limit = jumpK;
   end
-  [~, best] = max(score);
-  s = shiftK(best);
-  if ~isnan(prev)
-    jump = mod(s - prev + 600, 1200) - 600;       % shortest way from the previous fit
-    if abs(jump) > jumpK
-      s = prev;                                   % best fit too far away: keep the previous one
-    else
-      s = prev + jump;                            % continue past +/-600 instead of wrapping
-    end
+  inRange = abs(mod(shiftK - centre + 600, 1200) - 600) <= limit;
+  sc = score;
+  sc(~inRange) = -Inf;
+  [bestScore, best] = max(sc);
+  score_(i) = bestScore;
+
+  % 2. Real peak: the neighbouring shifts (1 cent lower and higher, same window) must not score
+  % higher. Indices wrap, as the shifts do.
+  isPeak = score(mod(best - 2, 1200) + 1) <= bestScore && score(mod(best, 1200) + 1) <= bestScore;
+
+  % 3. Clear winner over the shifts a semitone and a whole tone away.
+  % If no clear winner, the best and every rival scoring within qK of it are candidates, and the
+  % one nearest to the previous fit (0 for the first) is taken instead of keeping the previous fit.
+  cand = shiftK(best);
+  rival = -Inf;
+  for dS = [-200 -100 100 200]
+    nearS = abs(mod(shiftK - (shiftK(best) + dS) + 600, 1200) - 600) <= compK;
+    scS = score;  scS(~nearS) = -Inf;
+    [rs, ri] = max(scS);
+    rival = max(rival, rs);
+    if rs >= qK * bestScore, cand(end+1) = shiftK(ri); end %#ok<AGROW>
   end
-  key_drift(i) = s;
-  prev = s;
+  isClear = bestScore > 0 && rival < qK * bestScore;
+  if ~isClear
+    [~, nearest] = min(abs(mod(cand - centre + 600, 1200) - 600));
+    best = find(shiftK == cand(nearest), 1);
+  end
+
+  if isPeak && bestScore > 0
+    prev = centre + mod(shiftK(best) - centre + 600, 1200) - 600;   % continue past +/-600
+  end
+  key_drift(i) = prev;                   % held fits repeat the previous value; NaN until the first
+  prev_(i) = prev;
 end
 
 % Spread within the choir, measured against the key fit. Each detection is shifted by the key
@@ -184,7 +220,7 @@ for i = 1:numel(tk)
   if dfw > 0, within_k(i) = sqrt((cSS(hiR+1) - cSS(loR)) / dfw); end
 end
 
-figure(1);
+figure(2);
 clf;
 subplot(5,1,1);
 plot(tg, trend, 'k', 'LineWidth', 2);
@@ -196,15 +232,14 @@ hold off;
 legend('trend', 'drift', 'key fit');
 grid on;
 subplot(5,1,2);
-plot(tg, detail)
+plot(tk, prev_);
+ylabel('prev');
 grid on;
 subplot(5,1,3);
 plot(tg, [nL,ng]);
 subplot(5,1,4);
-plot(tg, [RL, Rg]);
-legend('trend', 'detail');
-ylabel('R (uncorrected)');
-ylim([-1.2,1]);
+plot(tk, score_);
+ylabel('score');
 grid on;
 subplot(5,1,5);
 plot(tk, [mad_k, std_k, within_k]);
