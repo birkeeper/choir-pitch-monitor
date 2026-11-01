@@ -2,14 +2,22 @@
 %%D = csvread('~/Downloads/arcade_tja_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
 %%D = csvread('~/Downloads/alles_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
 D = csvread('~/Downloads/alles_2_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
+%%D = csvread('~/Downloads/alles_2_distill02_multif0.csv', 1, 0, "emptyvalue", NaN);
+
+% csvread drops the empty field after the last comma of each line, so the file's 25 columns can
+% arrive as 24 (the last cents column is empty whenever fewer than eight voices are detected).
+if columns(D) == 24, D(:, 25) = NaN; end
 
 %%scaleK   = [0 200 400 500 700 900 1100];   % C D E F G A B, in cents above C
-scaleK   = [0 100 200 300 400 500 600 700 800 900 1000 1100];   % semitone scale, in cents above C
-%%scaleK   = [100 300 400 600 800 900 1100];   % C# D# E F# G# A B, in cents above C
+%%scaleK   = [0 100 200 300 400 500 600 700 800 900 1000 1100];   % semitone scale, in cents above C
+scaleK   = [100 300 400 600 800 900 1100];   % C# D# E F# G# A B, in cents above C
 
 t = D(:,1);
 C = D(:, 4:3:end);                      % the eight cents columns
-M = ~isnan(C);               % occupied slots (check how empties land)
+F = D(:, 2:3:end);                       % the eight f0 columns
+fMin = 30;  fMax = 3000;                 % Hz; detections outside this range are ignored
+F(F < fMin | F > fMax) = NaN;
+M = ~isnan(C) & ~isnan(F);               % occupied slots: a cents value and an in-range f0
 C(~M)=0;
 X = sum(cos(2*pi*C/100) .* M, 2);
 Y = sum(sin(2*pi*C/100) .* M, 2);
@@ -101,7 +109,7 @@ drift_u(unreliable) = NaN;
 %     candidate (best or near-equal rival) nearest to the previous fit is taken.
 % Causal: each fit uses only the past window's scores and the previous fit.
 hopK     = 0.5;                  % s between key fits
-WK       = 8;                    % s causal window; needs several chords to pin down the key
+WK       = 2;                    % s causal window; needs several chords to pin down the key
 sigK     = 20;                   % cents width of each template note
 startK   = 100;                  % cents; the choir is assumed to start within this of pitch
 jumpK    = 50;                   % cents; search range around the previous fit
@@ -109,7 +117,6 @@ qK       = 0.85;                 % a rival scoring this fraction of the best mak
 compK    = 30;                   % cents; rivals are looked for within this of best +/-100 and +/-200
 minDetK  = 100;                   % fewer detections in the window: no fit, previous one is kept
 
-F = D(:, 2:3:end);                       % the eight f0 columns
 [slot, rowK] = find(M.');                % row-major, so detections come out in time order
 fK    = F(sub2ind(size(F), rowK, slot));
 centK = mod(round(1200*log2(fK/440) + 900), 1200);   % cents above C, folded to one octave
@@ -126,11 +133,13 @@ tk = (t(1) + WK : hopK : t(end))';
 key_drift = NaN(size(tk));
 score_ = NaN(size(tk));
 prev_ = NaN(size(tk));
+Nstat = NaN(size(tk));
 prev = NaN;
 lo = 1; hi = 0;
 for i = 1:numel(tk)
   while lo <= numel(tK) && tK(lo) <= tk(i) - WK, lo = lo + 1; end
   while hi < numel(tK) && tK(hi+1) <= tk(i), hi = hi + 1; end
+  Nstat(i) = hi - lo + 1;
   if hi - lo + 1 < minDetK, continue; end
   h = accumarray(centK(lo:hi) + 1, 1, [1200, 1]);
   score = real(ifft(fft(h) .* FTK));    % score(k+1): histogram shifted by shiftK(k+1) cents
@@ -220,7 +229,7 @@ for i = 1:numel(tk)
   if dfw > 0, within_k(i) = sqrt((cSS(hiR+1) - cSS(loR)) / dfw); end
 end
 
-figure(2);
+figure(1);
 clf;
 subplot(5,1,1);
 plot(tg, trend, 'k', 'LineWidth', 2);
@@ -231,9 +240,10 @@ plot(tk, key_drift, 'r', 'LineWidth', 2);
 hold off;
 legend('trend', 'drift', 'key fit');
 grid on;
+ylim([-200,50]);
 subplot(5,1,2);
-plot(tk, prev_);
-ylabel('prev');
+plot(tk, Nstat);
+ylabel('Nstat');
 grid on;
 subplot(5,1,3);
 plot(tg, [nL,ng]);
@@ -247,3 +257,4 @@ legend('MAD', 'std', 'within-frame std');
 ylabel('spread around key fit (cents)');
 xlabel('time (s)');
 grid on;
+ylim([0,50]);
