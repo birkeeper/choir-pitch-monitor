@@ -25,7 +25,7 @@ async function ensureLoaded() {
         backend,
         source: {
             architecture: 'NMP salience (Bittner et al. 2022)',
-            weights: 'model/nmp_salience_tfjs/',
+            weights: 'model/distill04_salience_tfjs/',
         },
         defaultThreshold: DEFAULT_THRESHOLD,
         plan: model.plan,

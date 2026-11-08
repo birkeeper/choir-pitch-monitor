@@ -12,7 +12,8 @@ import {
     SAMPLE_RATE, FRAME_RATE, CENTS_PER_BIN, N_BINS, REFERENCE_A4, DEFAULT_THRESHOLD,
 } from './constants.js';
 
-const VERSION = 'v0.1';
+// Set by version.js, which the page loads before this module; it also names the service worker's cache.
+const VERSION = self.APP_VERSION;
 
 const elements = {
     version: document.getElementById('version'),

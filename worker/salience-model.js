@@ -1,5 +1,5 @@
 // Runs the NMP salience model (Bittner et al. 2022 / Basic Pitch) from the tensorflowjs_converter
-// output in model/nmp_salience_tfjs/.
+// output in model/distill04_salience_tfjs/ (a distilled student with the same interface).
 //
 // The whole front end is inside the graph -- its nodes include a `cqt2010v2` block and a
 // `harmonic_stacking` block -- so this module feeds it raw mono audio at 22050 Hz and gets the Yp

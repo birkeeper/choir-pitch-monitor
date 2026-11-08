@@ -4,7 +4,9 @@
 // request synthesis here, just static assets. The assets are worth caching aggressively though --
 // the model is about 0.85 MB and TF.js another 1.1 MB.
 
-const CACHE_NAME = "choir-pitch-monitor-v0.3";
+importScripts("./version.js");
+
+const CACHE_NAME = `choir-pitch-monitor-${self.APP_VERSION}`;
 
 // Everything needed to run offline. The model assets are listed explicitly because a cold start
 // without them fails in a confusing way (the worker loads, then cannot fetch its weights).
@@ -14,6 +16,7 @@ const PRECACHE = [
     "./pitch_monitor.css",
     "./pitch_monitor.js",
     "./constants.js",
+    "./version.js",
     "./manifest.json",
     "./icons/pitchmonitor-icon.svg",
     "./js/audio-source.js",
@@ -22,8 +25,8 @@ const PRECACHE = [
     "./worker/backend.js",
     "./worker/notes.js",
     "./libraries/tfjs/tfjs.js",
-    "./model/nmp_salience_tfjs/model.json",
-    "./model/nmp_salience_tfjs/group1-shard1of1.bin",
+    "./model/distill04_salience_tfjs/model.json",
+    "./model/distill04_salience_tfjs/group1-shard1of1.bin",
 ];
 
 self.addEventListener("install", (event) => {
