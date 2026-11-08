@@ -7,12 +7,11 @@
 
 import {
     DRIFT_PLOT_MIN, DRIFT_PLOT_MAX, SPREAD_PLOT_MIN, SPREAD_PLOT_MAX,
+    DRIFT_YELLOW, DRIFT_RED, SPREAD_YELLOW, SPREAD_RED,
 } from '../constants.js';
 
 // The app is always in Bootstrap's dark theme, so only the dark steps are needed.
 const COLORS = {
-    drift: '#3987e5',
-    spread: '#d95926',
     text: 'rgba(222, 226, 230, 0.75)',
     grid: 'rgba(255, 255, 255, 0.08)',
     zero: 'rgba(255, 255, 255, 0.35)',
@@ -23,12 +22,27 @@ const COLORS = {
 const MARGIN = { left: 44, right: 10, top: 18, gap: 42, bottom: 22 };
 const FONT = '12px system-ui, sans-serif';
 
+// Trace colour stops, as [r, g, b]: in tune, the first threshold, the second threshold and beyond.
+const GREEN = [60, 179, 113];
+const YELLOW = [229, 193, 0];
+const RED = [229, 72, 77];
+
 const PANELS = [
-    { key: 'keyDrift', title: 'drift (cents)', color: COLORS.drift,
+    { key: 'keyDrift', title: 'drift (cents)', yellow: DRIFT_YELLOW, red: DRIFT_RED,
         min: DRIFT_PLOT_MIN, max: DRIFT_PLOT_MAX, step: 50 },
-    { key: 'spread', title: 'spread (cents)', color: COLORS.spread,
+    { key: 'spread', title: 'spread (cents)', yellow: SPREAD_YELLOW, red: SPREAD_RED,
         min: SPREAD_PLOT_MIN, max: SPREAD_PLOT_MAX, step: 25 },
 ];
+
+/** Green at 0, yellow at panel.yellow, red from panel.red on, judged by size in either direction. */
+function traceColor(panel, value) {
+    const size = Math.abs(value);
+    const [from, to, fraction] = size <= panel.yellow
+        ? [GREEN, YELLOW, size / panel.yellow]
+        : [YELLOW, RED, Math.min(1, (size - panel.yellow) / (panel.red - panel.yellow))];
+    const channel = (i) => Math.round(from[i] + fraction * (to[i] - from[i]));
+    return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`;
+}
 
 /** Index of the last element of the sorted `times` that is <= t, or -1. */
 export function latestIndex(times, t) {
@@ -170,22 +184,28 @@ export class EnsembleChart {
             context.beginPath();
             context.rect(left, top, right - left, bottom - top);
             context.clip();
-            context.strokeStyle = panel.color;
             context.lineWidth = 2;
-            context.lineJoin = 'round';
             context.lineCap = 'round';
-            context.beginPath();
+            // One stroke per segment, its colour blended along it from one value to the next. Round
+            // caps close the joins between segments.
             const values = this.#data[panel.key];
-            let drawing = false;
-            for (let i = 0; i < values.length; i++) {
+            const times = this.#data.time;
+            for (let i = 1; i < values.length; i++) {
                 // NaN is a gap: no fit could be made there.
-                if (Number.isNaN(values[i])) { drawing = false; continue; }
-                const x = this.#x(this.#data.time[i]);
-                const y = this.#y(panel, index, values[i]);
-                if (drawing) { context.lineTo(x, y); } else { context.moveTo(x, y); }
-                drawing = true;
+                if (Number.isNaN(values[i - 1]) || Number.isNaN(values[i])) { continue; }
+                const x0 = this.#x(times[i - 1]);
+                const y0 = this.#y(panel, index, values[i - 1]);
+                const x1 = this.#x(times[i]);
+                const y1 = this.#y(panel, index, values[i]);
+                const gradient = context.createLinearGradient(x0, y0, x1, y1);
+                gradient.addColorStop(0, traceColor(panel, values[i - 1]));
+                gradient.addColorStop(1, traceColor(panel, values[i]));
+                context.strokeStyle = gradient;
+                context.beginPath();
+                context.moveTo(x0, y0);
+                context.lineTo(x1, y1);
+                context.stroke();
             }
-            context.stroke();
             context.restore();
         });
 

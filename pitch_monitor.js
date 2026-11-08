@@ -128,6 +128,7 @@ async function analyse(file) {
     elements.audio.classList.add('d-none');
     chart.setData(null, 0);
     showPlayhead();
+    askForKey();
 
     let source;
     try {
@@ -282,6 +283,25 @@ function trackEnsemble() {
     elements.summary.textContent = summarise(session, peaks, session.options);
 }
 
+/**
+ * Reset the key to 'none' and show the menu unfolded, so the right key is picked for every new
+ * recording: the drift is measured against it. A native dropdown cannot be opened from script
+ * without a fresh click (showPicker() is refused once the user's activation has expired), so the
+ * menu is shown as an open list instead, and folds back once a key is chosen.
+ */
+function askForKey() {
+    elements.key.value = 'none';
+    elements.key.size = KEY_SIGNATURES.length;
+    elements.key.classList.add('choosing');
+    elements.key.focus();
+}
+
+function foldKey() {
+    if (!elements.key.classList.contains('choosing')) { return; }
+    elements.key.removeAttribute('size');
+    elements.key.classList.remove('choosing');
+}
+
 function readSmoothness() {
     const seconds = clamp(Number(elements.smoothness.value) || KEY_FIT_WINDOW_DEFAULT,
         KEY_FIT_WINDOW_MIN, KEY_FIT_WINDOW_MAX);
@@ -413,7 +433,13 @@ for (const element of [elements.threshold, elements.bandLower, elements.bandUppe
 }
 
 // The key and smoothness only feed the tracker, so peak picking is not repeated for them.
-elements.key.addEventListener('change', trackEnsemble);
+elements.key.addEventListener('change', () => {
+    foldKey();
+    trackEnsemble();
+});
+// Clicking the already selected entry fires no change event, but is still a choice: 'none' may be
+// the right key.
+elements.key.addEventListener('click', foldKey);
 elements.smoothness.addEventListener('input', readSmoothness);
 elements.smoothness.addEventListener('change', trackEnsemble);
 readSmoothness();

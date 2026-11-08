@@ -101,3 +101,10 @@ audio {
     color: var(--bs-body-color);
     font-variant-numeric: tabular-nums;
 }
+
+/* The key menu, unfolded while a new recording waits for its key to be chosen. */
+.setting select.choosing {
+    vertical-align: top;
+    border-color: var(--bs-primary);
+    box-shadow: 0 0 0 0.2rem rgba(var(--bs-primary-rgb), 0.35);
+}

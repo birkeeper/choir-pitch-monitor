@@ -127,3 +127,10 @@ export const DRIFT_PLOT_MIN = -200;
 export const DRIFT_PLOT_MAX = 50;
 export const SPREAD_PLOT_MIN = 0;
 export const SPREAD_PLOT_MAX = 100;
+
+// Trace colours: green at 0, yellow at the first value, red at and beyond the second, blended in
+// between. Drift is judged by its size in either direction.
+export const DRIFT_YELLOW = 50;
+export const DRIFT_RED = 100;
+export const SPREAD_YELLOW = 25;
+export const SPREAD_RED = 50;

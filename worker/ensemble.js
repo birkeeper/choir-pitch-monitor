@@ -34,10 +34,13 @@ const MAJOR_STEPS = [0, 2, 4, 5, 7, 9, 11];
 
 /**
  * Key signatures offered to the user, in menu order: 'none' (every semitone), then sharps down to
- * no accidentals and on through the flats. 6# and 6b are the same pitch classes (F# / Gb major).
+ * no accidentals and on through the flats. All fifteen are listed, as they can all appear in sheet
+ * music, although some name the same pitch classes: 7# = 5b (C# / Db), 6# = 6b (F# / Gb) and
+ * 5# = 7b (B / Cb).
  */
 export const KEY_SIGNATURES = [
-    'none', '6#', '5#', '4#', '3#', '2#', '1#', '0', '1b', '2b', '3b', '4b', '5b', '6b',
+    'none', '7#', '6#', '5#', '4#', '3#', '2#', '1#', '0',
+    '1b', '2b', '3b', '4b', '5b', '6b', '7b',
 ];
 
 /**
@@ -53,7 +56,7 @@ export function scaleFromKey(key) {
     if (key === 'none') {
         return Array.from({ length: 12 }, (_, i) => 100 * i);
     }
-    const match = /^([0-6])([#b]?)$/.exec(key);
+    const match = /^([0-7])([#b]?)$/.exec(key);
     if (!match) { throw new Error(`unknown key signature: ${key}`); }
     const count = Number(match[1]);
     const tonic = mod((match[2] === 'b' ? -7 : 7) * count, 12);
