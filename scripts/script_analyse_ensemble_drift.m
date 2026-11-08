@@ -1,8 +1,11 @@
 %%D = csvread('~/Downloads/arcade_tja_frame_notes.csv', 1, 0, "emptyvalue", NaN);
 %%D = csvread('~/Downloads/arcade_tja_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
 %%D = csvread('~/Downloads/alles_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
-D = csvread('~/Downloads/alles_2_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
+%%D = csvread('~/Downloads/alles_2_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
 %%D = csvread('~/Downloads/alles_2_distill02_multif0.csv', 1, 0, "emptyvalue", NaN);
+%D = csvread('~/Downloads/alles_2_distill04_multif0.csv', 1, 0, "emptyvalue", NaN);
+%D = csvread('~/Downloads/The A Team - Vocalcious_distill04_multif0.csv', 1, 0, "emptyvalue", NaN);
+D = csvread('~/Downloads/The A Team - Vocalcious_model3_exp3multif0.csv', 1, 0, "emptyvalue", NaN);
 
 % csvread drops the empty field after the last comma of each line, so the file's 25 columns can
 % arrive as 24 (the last cents column is empty whenever fewer than eight voices are detected).
@@ -10,7 +13,8 @@ if columns(D) == 24, D(:, 25) = NaN; end
 
 %%scaleK   = [0 200 400 500 700 900 1100];   % C D E F G A B, in cents above C
 %%scaleK   = [0 100 200 300 400 500 600 700 800 900 1000 1100];   % semitone scale, in cents above C
-scaleK   = [100 300 400 600 800 900 1100];   % C# D# E F# G# A B, in cents above C
+%%scaleK   = [100 300 400 600 800 900 1100];   % C# D# E F# G# A B, in cents above C
+scaleK   = [0 200 300 500 700 800 1000];   % C D Eb F G Ab Bb (Eb major / C minor, three flats), in cents above C
 
 t = D(:,1);
 C = D(:, 4:3:end);                      % the eight cents columns
@@ -93,8 +97,8 @@ trend   = trend - offset;                       % same shift, so it stays on top
 unreliable = RL < Rmin | Rg < RminS | ng == 0;
 drift_u(unreliable) = NaN;
 
-% Key fit: absolute drift including whole semitones, from the known key. The song has no flats or
-% sharps, so it is C major or A minor; both use the white keys, so one template serves. Every
+% Key fit: absolute drift including whole semitones, from the known key. The song has three flats,
+% so it is Eb major or C minor; both use the same notes, so one template serves. Every
 % window's notes are folded onto one octave (1200 cents above C) and the template is slid over
 % them; the best shift is the drift. Nothing is accumulated, so a bad window only spoils itself.
 % Each fit is accepted only if the checks pass; otherwise the previous fit is kept:
