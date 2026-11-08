@@ -15,7 +15,7 @@ analysis code can later be driven from a live microphone.
 | # | Decision | Source |
 |---|---|---|
 | 1 | Single microphone, no score-following, no voice-part assignment. Report **per detected note**. | earlier conversation |
-| 2 | Model: the NMP salience head (`Yp`) of Bittner et al. 2022, converted to a TF.js graph model under `model/nmp_salience_tfjs/`. | user |
+| 2 | Model: the NMP salience head (`Yp`) of Bittner et al. 2022, fine-tuned (distill04) and converted to a TF.js graph model under `model/distill04_salience_tfjs/`. | user |
 | 3 | Inference in the browser via **TensorFlow.js**; playback via **WebAudio API**. | user |
 | 4 | Peak picking follows the paper: strict local maxima of `Yp` along frequency, kept above `tau_n`. | paper §3 |
 | 5 | Off-pitch verdict is **per frame** (every 11.6 ms), not per note-event. | user |
@@ -54,16 +54,12 @@ the rest: 43844 samples in, 172 x 264 out. The two agree, which is itself a chec
 Two things the paper does not state:
 
 - **Where the bin grid is anchored.** 264 bins ÷ 3 per semitone = 88 semitones, the piano compass,
-  so the grid spans A0–C8 and is anchored on A0 = 27.5 Hz. But A0 lands on **bin 1, not bin 0**:
-  with an odd number of bins per semitone the semitone centre is the middle bin of its triple, so
-  the grid extends a third of a semitone below the lowest note. Semitone centres fall on bins
-  1, 4, … 262 — exactly 88 — with one spare bin at each end.
-
-  This was verified rather than assumed, because a one-bin error is invisible and ruinous: it is a
-  uniform 33.3 cent bias on every reading. Sweeping deliberately non-equal-tempered sine tones and
-  fitting bin against log2(frequency) gives 36.02 bins/octave, confirming 3 per semitone, and an
-  apparent base of 26.93 Hz — 27.5 Hz shifted down by 1.09 bins. With the offset applied, sine tones
-  at known pitches read back to within +1.2 to +1.6 cents.
+  so the grid spans A0–C8 and is anchored on A0 = 27.5 Hz. Which bin A0 lands on (`A0_BIN`) is set
+  by the trained weights, not by the graph, so it is measured rather than assumed and re-measured
+  whenever the weights change: sweep deliberately non-equal-tempered sine tones through the model
+  and fit the peak bin against log2(frequency). The slope confirms 36 bins/octave; the intercept
+  gives the anchor. A one-bin error is invisible and ruinous: a uniform 33.3 cent bias on every
+  reading.
 
 - **The window overlap.** Windows are trimmed by 15 frames at each end before stitching. Fig. 1
   gives the `Yp` path as Conv2D(5×5) → Conv2D(5×5) → Conv2D(3×39) → Conv2D(5×5), whose time extents
@@ -122,7 +118,7 @@ choir-pitch-monitor/
 │   ├── salience-model.js         windowing, inference, stitching
 │   ├── backend.js                TF.js backend selection
 │   └── notes.js                  peak picking, refinement, cents, ensemble drift
-├── model/nmp_salience_tfjs/      converted graph model (~0.85 MB)
+├── model/distill04_salience_tfjs/ converted graph model (~0.85 MB)
 ├── tests/
 │   ├── test-backend-parity.html  every backend vs CPU, on real audio
 │   └── fixtures/clip2s.wav

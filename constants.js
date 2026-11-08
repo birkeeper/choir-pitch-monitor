@@ -43,20 +43,11 @@ export const N_BINS = 264;
 // the grid spans A0..C8 and is anchored on A0 = 27.5 Hz.
 export const F_MIN = 27.5;
 
-// Which bin A0 actually falls on -- and it is bin 1, not bin 0.
-//
-// With an ODD number of bins per semitone the semitone centre is the middle bin of its triple, so
-// the grid extends a third of a semitone below the lowest note. Counting it out: centres land on
-// bins 1, 4, ... 262, which is exactly 88 semitones (A0 to C8), and the two leftover bins are the
-// outer thirds at either end -- 3 * 88 + 2 would be 266, but the first and last thirds are shared,
-// giving the 264 the graph declares.
-//
-// This was verified rather than assumed, because getting it wrong is invisible and ruinous: a
-// one-bin error is a uniform 33.3 cent bias on every reading. Sweeping deliberately non-equal-
-// tempered sine tones through the model and fitting bin against log2(frequency) gives 36.02
-// bins/octave (confirming 3 per semitone) and an apparent base of 26.93 Hz, which is 27.5 Hz
-// shifted down by 1.09 bins. With this offset applied the residual error is ~0.05 bins.
-export const A0_BIN = 1;
+// Which bin A0 actually falls on. The graph does not fix this; the trained weights do, so it must be
+// re-measured whenever the weights change. Measure it by sweeping non-equal-tempered sine tones
+// through the model and fitting the peak bin against log2(frequency). A one-bin error is a uniform
+// 33.3 cent bias on every reading.
+export const A0_BIN = 0;
 
 // Note that A0 is an exact equal-tempered pitch at A4 = 440, so the bin grid lands precisely on 0
 // and +/-33.3 cents relative to every semitone -- see the note on sub-bin refinement below.

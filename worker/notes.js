@@ -25,8 +25,8 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 /**
  * Frequency of a (possibly fractional) salience bin.
  *
- * A0 sits on bin A0_BIN rather than bin 0; see the note in constants.js. Omitting that offset makes
- * every reported pitch a uniform 33.3 cents sharp.
+ * A0 sits on bin A0_BIN, which depends on the model's weights; see the note in constants.js. Each
+ * bin of error there is a uniform 33.3 cent bias on every reported pitch.
  */
 export function binToFrequency(bin) {
     return F_MIN * Math.pow(2, (bin - A0_BIN) / BINS_PER_OCTAVE);
