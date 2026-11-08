@@ -3,4 +3,4 @@
 // page and the cache name cannot disagree. Bump it whenever a cached asset changes: browsers
 // byte-compare imported scripts when checking for a service worker update, so editing this file
 // alone is enough to install a fresh cache.
-self.APP_VERSION = 'v0.4';
+self.APP_VERSION = 'v0.5';

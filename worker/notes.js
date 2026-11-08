@@ -14,11 +14,8 @@
 // those of its neighboring bins in frequency".
 
 import {
-    N_BINS, F_MIN, A0_BIN, BINS_PER_OCTAVE, CENTS_PER_BIN, FRAME_DURATION, REFERENCE_A4,
+    N_BINS, F_MIN, A0_BIN, BINS_PER_OCTAVE, FRAME_DURATION, REFERENCE_A4, MAX_FRAME_PITCHES,
 } from '../constants.js';
-
-/** Columns the per-frame note export reserves; extra detections in a frame are dropped. */
-const MAX_FRAME_PITCHES = 8;
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -64,6 +61,41 @@ function refineOffset(below, at, above) {
 }
 
 /**
+ * Peaks of a single frame.
+ *
+ * Reads salience bin b from values[offset + b * stride], so the same code serves a whole stitched
+ * map (stride = frames, offset = frame) and a single live frame (stride = 1, offset = 0).
+ *
+ * @param {Float32Array} values
+ * @param {number} stride
+ * @param {number} offset
+ * @param {object} [options] as for extractPeaks
+ * @param {(bin:number, frequency:number, salience:number, note:object)=>void} onPeak
+ *   called per accepted peak, in ascending bin order
+ */
+export function extractFramePeaks(values, stride, offset, options, onPeak) {
+    const {
+        threshold = 0.5,
+        refine = true,
+        referenceA4 = REFERENCE_A4,
+    } = options ?? {};
+
+    // The first and last bins are never peaks (only one neighbour each), so the scan runs from 1 to
+    // N_BINS - 1. Comparisons are strict on both sides, so a two-bin plateau yields no peak.
+    for (let bin = 1; bin < N_BINS - 1; bin++) {
+        const value = values[offset + bin * stride];
+        if (value < threshold) { continue; }
+        const below = values[offset + (bin - 1) * stride];
+        const above = values[offset + (bin + 1) * stride];
+        if (!(value > below && value > above)) { continue; }
+
+        const position = refine ? bin + refineOffset(below, value, above) : bin;
+        const frequency = binToFrequency(position);
+        onPeak(bin, frequency, value, nearestNote(frequency, referenceA4));
+    }
+}
+
+/**
  * Extract peaks from a salience map.
  *
  * @param {Float32Array} salience [bins * frames], bin-major -- the model's output layout
@@ -77,12 +109,6 @@ function refineOffset(below, at, above) {
  *   parallel arrays, ordered by frame then ascending bin
  */
 export function extractPeaks(salience, frames, options = {}) {
-    const {
-        threshold = 0.5,
-        refine = true,
-        referenceA4 = REFERENCE_A4,
-    } = options;
-
     const frameOut = [];
     const binOut = [];
     const frequencyOut = [];
@@ -91,27 +117,14 @@ export function extractPeaks(salience, frames, options = {}) {
     const midiOut = [];
 
     for (let frame = 0; frame < frames; frame++) {
-        // The first and last bins are never peaks (only one neighbour each), so the scan runs
-        // from 1 to N_BINS - 1. Comparisons are strict on both sides, so a two-bin plateau yields
-        // no peak.
-        for (let bin = 1; bin < N_BINS - 1; bin++) {
-            const value = salience[bin * frames + frame];
-            if (value < threshold) { continue; }
-            const below = salience[(bin - 1) * frames + frame];
-            const above = salience[(bin + 1) * frames + frame];
-            if (!(value > below && value > above)) { continue; }
-
-            const position = refine ? bin + refineOffset(below, value, above) : bin;
-            const frequency = binToFrequency(position);
-            const note = nearestNote(frequency, referenceA4);
-
+        extractFramePeaks(salience, frames, frame, options, (bin, frequency, value, note) => {
             frameOut.push(frame);
             binOut.push(bin);
             frequencyOut.push(frequency);
             salienceOut.push(value);
             centsOut.push(note.cents);
             midiOut.push(note.midi);
-        }
+        });
     }
 
     return {
@@ -126,96 +139,21 @@ export function extractPeaks(salience, frames, options = {}) {
 }
 
 /**
- * Per-frame ensemble drift: how far the whole ensemble sits from equal temperament.
- *
- * Deviations are only defined modulo a semitone -- a note 49 cents sharp of C and one 51 cents flat
- * of C# are almost the same pitch -- so an ordinary mean would be wrong near the boundary, and a
- * choir sinking past it would appear to snap back. Averaging unit vectors on the 100-cent circle
- * instead is continuous across the boundary. This is the wrap-safe form of the "cumulative drift"
- * signal discussed in the design conversation.
- *
- * Contributions are weighted by salience, then smoothed over `windowFrames`. Drift is a property of
- * the ensemble over seconds, not of a single 11.6 ms frame, and the default window is ~2 s: shorter
- * windows produce an estimate that swings across the whole +/-50 cent range as individual notes come
- * and go, which is noise rather than drift.
- *
- * The returned `concentration` is the length of the mean resultant vector, in [0, 1]. It is the
- * honest confidence signal for this estimate: when the sounding notes disagree about where the
- * semitone grid sits -- which is what a spread-out deviation histogram means -- the angle is close
- * to meaningless, and concentration says so instead of leaving the caller to guess.
- *
- * @returns {{cents: Float64Array, concentration: Float64Array}} cents in (-50, 50] per frame
+ * Long-format CSV: one row per detected peak, with its deviation from equal temperament at the
+ * configured reference.
  */
-export function ensembleDrift(peaks, frames, windowFrames = 173) {
-    const scale = (2 * Math.PI) / 100;
-    const sumX = new Float64Array(frames);
-    const sumY = new Float64Array(frames);
-    const sumWeight = new Float64Array(frames);
-
-    for (let i = 0; i < peaks.count; i++) {
-        const frame = peaks.frame[i];
-        const weight = peaks.salience[i];
-        const angle = peaks.cents[i] * scale;
-        sumX[frame] += weight * Math.cos(angle);
-        sumY[frame] += weight * Math.sin(angle);
-        sumWeight[frame] += weight;
-    }
-
-    // Smooth the resultant vectors rather than the angles: summing vectors keeps the wrap-safety
-    // and automatically down-weights frames whose detections disagree.
-    const half = Math.floor(windowFrames / 2);
-    const cumulativeX = new Float64Array(frames + 1);
-    const cumulativeY = new Float64Array(frames + 1);
-    const cumulativeWeight = new Float64Array(frames + 1);
-    for (let frame = 0; frame < frames; frame++) {
-        cumulativeX[frame + 1] = cumulativeX[frame] + sumX[frame];
-        cumulativeY[frame + 1] = cumulativeY[frame] + sumY[frame];
-        cumulativeWeight[frame + 1] = cumulativeWeight[frame] + sumWeight[frame];
-    }
-
-    const cents = new Float64Array(frames);
-    const concentration = new Float64Array(frames);
-    for (let frame = 0; frame < frames; frame++) {
-        const from = Math.max(0, frame - half);
-        const to = Math.min(frames, frame + half + 1);
-        const x = cumulativeX[to] - cumulativeX[from];
-        const y = cumulativeY[to] - cumulativeY[from];
-        const weight = cumulativeWeight[to] - cumulativeWeight[from];
-        cents[frame] = (x === 0 && y === 0) ? 0 : Math.atan2(y, x) / scale;
-        concentration[frame] = weight > 0 ? Math.sqrt(x * x + y * y) / weight : 0;
-    }
-    return { cents, concentration };
-}
-
-/** Bring a cents value into (-50, 50], the half-open interval around the nearest semitone. */
-export function wrapCents(cents) {
-    return cents - 100 * Math.floor((cents + 50) / 100);
-}
-
-/**
- * Long-format CSV: one row per detected peak.
- *
- * `cents` is the deviation from equal temperament at the configured reference; `drift_cents` is the
- * ensemble's own deviation at that instant, and `rel_cents` is the difference -- "who is flat
- * relative to the group" as opposed to "the group is flat".
- */
-export function peaksToCsv(peaks, drift, options = {}) {
+export function peaksToCsv(peaks, options = {}) {
     const {
         bandLower = -20,
         bandUpper = 20,
         referenceA4 = REFERENCE_A4,
-        relativeToDrift = false,
     } = options;
 
-    const lines = ['time_s,freq_hz,bin,salience,note,note_hz,cents,'
-        + 'drift_cents,drift_confidence,rel_cents,in_band'];
+    const lines = ['time_s,freq_hz,bin,salience,note,note_hz,cents,in_band'];
     for (let i = 0; i < peaks.count; i++) {
         const time = peaks.frame[i] * FRAME_DURATION;
         const note = nearestNote(peaks.frequency[i], referenceA4);
-        const driftCents = drift.cents[peaks.frame[i]];
-        const relative = wrapCents(peaks.cents[i] - driftCents);
-        const judged = relativeToDrift ? relative : peaks.cents[i];
-        const inBand = judged >= bandLower && judged <= bandUpper ? 1 : 0;
+        const inBand = peaks.cents[i] >= bandLower && peaks.cents[i] <= bandUpper ? 1 : 0;
         lines.push([
             time.toFixed(6),
             peaks.frequency[i].toFixed(4),
@@ -224,9 +162,6 @@ export function peaksToCsv(peaks, drift, options = {}) {
             note.name,
             note.frequency.toFixed(4),
             peaks.cents[i].toFixed(2),
-            driftCents.toFixed(2),
-            drift.concentration[peaks.frame[i]].toFixed(3),
-            relative.toFixed(2),
             inBand,
         ].join(','));
     }

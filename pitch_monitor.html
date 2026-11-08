@@ -47,6 +47,31 @@
         <audio id="audioElement" controls class="mx-2 mb-2 w-auto d-none"></audio>
     </div>
 
+    <!-- Ensemble drift and spread. Both follow the playhead, and both are causal: the value shown at
+         a moment uses only the audio up to that moment, as it would live. -->
+    <div class="d-flex flex-column mt-2 border border-2 rounded-2 w-100">
+        <div class="d-flex flex-row align-items-center my-2 w-100 border-bottom border-2">
+            <div class="ms-2 mb-1 fw-bold">Ensemble</div>
+        </div>
+        <div class="d-flex flex-row flex-wrap align-items-center mb-2 w-100">
+            <label class="setting ms-2">key
+                <select id="key"></select>
+            </label>
+            <label class="setting ms-2">smoothness
+                <input type="range" id="smoothness" class="align-middle">
+                <span id="smoothnessValue"></span>
+            </label>
+        </div>
+        <div class="d-flex flex-row flex-wrap align-items-baseline mb-1 w-100">
+            <div class="readout ms-2">drift <span id="driftNow" class="readout-value">&ndash;</span></div>
+            <div class="readout ms-4">spread <span id="spreadNow" class="readout-value">&ndash;</span></div>
+        </div>
+        <div class="chart-wrap mx-2 mb-2">
+            <canvas id="ensembleChart" aria-label="Ensemble drift and spread over time"></canvas>
+            <div id="chartTooltip" class="chart-tooltip d-none"></div>
+        </div>
+    </div>
+
     <!-- Analysis settings. Changing any of these re-derives the notes from the cached salience
          map, so it is instant -- no GPU work is repeated. -->
     <div class="d-flex flex-column mt-2 border border-2 rounded-2 w-100">
@@ -63,14 +88,8 @@
             <label class="setting ms-2">upper
                 <input type="number" id="bandUpper" value="20" min="0" max="50" step="1"> ¢
             </label>
-            <label class="setting ms-2">drift window
-                <input type="number" id="driftWindow" value="2.0" min="0.2" max="10" step="0.1"> s
-            </label>
             <label class="setting ms-2">
                 <input type="checkbox" id="refine" checked> sub-bin refinement
-            </label>
-            <label class="setting ms-2">
-                <input type="checkbox" id="relativeToDrift"> judge relative to ensemble drift
             </label>
         </div>
     </div>

@@ -96,3 +96,34 @@ export const DEFAULT_BAND_UPPER_CENTS = 20;
 // estimated f0 bin, and those of its neighboring bins in frequency" -- which is the parabolic
 // interpolation in worker/notes.js.
 export const DEFAULT_REFINE = true;
+
+// --- Ensemble drift and spread ------------------------------------------------------------------
+//
+// Ported from the key fit and spread sections of scripts/script_analyse_ensemble_drift.m, which is
+// where these values were tuned; see worker/ensemble.js for what each one does.
+
+// The script reads the per-frame note CSV, which carries at most this many pitches per frame (the
+// most salient ones), and ignores pitches outside the f0 range below. The tracker applies the same
+// limits so that it sees exactly the detections the script was tuned on.
+export const MAX_FRAME_PITCHES = 8;
+export const ENSEMBLE_F_MIN = 30;          // Hz
+export const ENSEMBLE_F_MAX = 3000;        // Hz
+
+export const KEY_FIT_HOP = 0.5;            // s between key fits (hopK)
+export const KEY_FIT_TEMPLATE_WIDTH = 20;  // cents width of each template note (sigK)
+export const KEY_FIT_START_RANGE = 100;    // cents; the choir is assumed to start within this of pitch (startK)
+export const KEY_FIT_JUMP = 50;            // cents; search range around the previous fit (jumpK)
+export const KEY_FIT_RIVAL_RATIO = 0.85;   // a rival scoring this fraction of the best is ambiguous (qK)
+export const KEY_FIT_RIVAL_RANGE = 30;     // cents; rivals are looked for within this of best +/-100, +/-200 (compK)
+export const KEY_FIT_MIN_DETECTIONS = 100; // fewer detections in the window: no fit (minDetK)
+
+// The window (WK in the script; the spread window WS equals it) is the user's smoothness setting.
+export const KEY_FIT_WINDOW_MIN = 2;       // s
+export const KEY_FIT_WINDOW_MAX = 8;       // s
+export const KEY_FIT_WINDOW_DEFAULT = 2;   // s, the value the script was tuned with
+
+// Fixed vertical ranges of the drift and spread plots, in cents.
+export const DRIFT_PLOT_MIN = -200;
+export const DRIFT_PLOT_MAX = 50;
+export const SPREAD_PLOT_MIN = 0;
+export const SPREAD_PLOT_MAX = 100;
