@@ -6,11 +6,13 @@
 import { AudioSource } from './js/audio-source.js';
 import { extractPeaks, peaksToCsv, peaksToFrameCsv, peaksToFrameNoteCsv }
     from './worker/notes.js';
-import { EnsembleTracker, KEY_SIGNATURES } from './worker/ensemble.js';
+import { EnsembleTracker, KEY_SIGNATURES, scaleSpelling, nearestScaleNote }
+    from './worker/ensemble.js';
 import { EnsembleChart, latestIndex, formatCents } from './js/ensemble-chart.js';
 import {
     SAMPLE_RATE, FRAME_RATE, FRAME_DURATION, CENTS_PER_BIN, N_BINS, REFERENCE_A4,
     DEFAULT_THRESHOLD, KEY_FIT_WINDOW_MIN, KEY_FIT_WINDOW_MAX, KEY_FIT_WINDOW_DEFAULT,
+    MAX_FRAME_PITCHES, ENSEMBLE_F_MIN, ENSEMBLE_F_MAX,
 } from './constants.js';
 
 // Set by version.js, which the page loads before this module; it also names the service worker's cache.
@@ -277,10 +279,57 @@ function trackEnsemble() {
             spread.push(fit.spread);
         }
     }
-    session.ensemble = { time, keyDrift, spread };
+    const spelling = scaleSpelling(elements.key.value);
+    const notesAt = (index) => describeNotes(peaks, frames, time[index], heldDrift(keyDrift, index),
+        spelling);
+    session.ensemble = { time, keyDrift, spread, notesAt };
     chart.setData(session.ensemble, session.audioSeconds);
     showPlayhead();
     elements.summary.textContent = summarise(session, peaks, session.options);
+}
+
+/** The key fit in effect at fit `index`: a skipped fit (NaN) holds the one before; 0 before any. */
+function heldDrift(keyDrift, index) {
+    for (let i = index; i >= 0; i--) {
+        if (Number.isFinite(keyDrift[i])) { return keyDrift[i]; }
+    }
+    return 0;
+}
+
+/**
+ * The notes detected in the frame at `seconds`, low to high, as [{text: "A3 +4", equalCents: 34}, ...]:
+ * each named by its nearest scale note after taking out the drift, with its deviation in cents;
+ * equalCents is how far it is from that note in equal temperament, i.e. the same plus the drift.
+ * Only the detections the tracker uses are listed: the MAX_FRAME_PITCHES most salient within the
+ * f0 range. Empty for a silent frame.
+ */
+function describeNotes(peaks, frames, seconds, drift, spelling) {
+    const frame = Math.min(frames - 1, Math.round(seconds / FRAME_DURATION));
+    // peaks are ordered by frame: find this frame's run.
+    let low = 0;
+    let high = peaks.count;
+    while (low < high) {
+        const middle = (low + high) >> 1;
+        if (peaks.frame[middle] < frame) { low = middle + 1; } else { high = middle; }
+    }
+    const found = [];
+    for (let i = low; i < peaks.count && peaks.frame[i] === frame; i++) {
+        const frequency = peaks.frequency[i];
+        if (frequency >= ENSEMBLE_F_MIN && frequency <= ENSEMBLE_F_MAX) {
+            found.push({ frequency, salience: peaks.salience[i] });
+        }
+    }
+    return found
+        .sort((a, b) => b.salience - a.salience)
+        .slice(0, MAX_FRAME_PITCHES)
+        .sort((a, b) => a.frequency - b.frequency)
+        .map(({ frequency }) => {
+            const { name, cents } = nearestScaleNote(frequency, drift, spelling);
+            const rounded = Math.round(cents);
+            // The text is measured from the scale note with the drift taken out; the colour from equal
+            // temperament, i.e. with the drift put back.
+            return { text: `${name} ${rounded > 0 ? '+' : ''}${rounded}`, equalCents: cents + drift };
+        });
 }
 
 /**

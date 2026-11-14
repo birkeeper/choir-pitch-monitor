@@ -113,7 +113,7 @@ export const MAX_FRAME_PITCHES = 8;
 export const ENSEMBLE_F_MIN = 30;          // Hz
 export const ENSEMBLE_F_MAX = 3000;        // Hz
 
-export const KEY_FIT_HOP = 0.5;            // s between key fits (hopK)
+export const KEY_FIT_HOP = 0.2;            // s between key fits (hopK)
 export const KEY_FIT_TEMPLATE_WIDTH = 20;  // cents width of each template note (sigK)
 export const KEY_FIT_START_RANGE = 100;    // cents; the choir is assumed to start within this of pitch (startK)
 export const KEY_FIT_JUMP = 50;            // cents; search range around the previous fit (jumpK)

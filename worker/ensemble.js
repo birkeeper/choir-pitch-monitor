@@ -63,6 +63,64 @@ export function scaleFromKey(key) {
     return MAJOR_STEPS.map((step) => 100 * mod(tonic + step, 12)).sort((a, b) => a - b);
 }
 
+const LETTERS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+const LETTER_STEPS = [0, 2, 4, 5, 7, 9, 11];
+const SHARP_ORDER = 'FCGDAEB';   // flats are added in the reverse order
+
+/**
+ * How a key signature spells its scale notes: semitone above C (0..11) -> letter and alteration
+ * (+1 sharp, -1 flat). Spelled as the signature does, so 3b gives Eb, Ab and Bb, and 7# gives E#
+ * and B#. With no key every semitone is a scale note, spelled with sharps.
+ *
+ * @param {string} key one of KEY_SIGNATURES
+ * @returns {Map<number, {letter:string, alteration:number}>}
+ */
+export function scaleSpelling(key) {
+    const spelling = new Map();
+    if (key === 'none') {
+        for (let step = 0; step < 12; step++) {
+            const i = LETTER_STEPS.findLastIndex((letterStep) => letterStep <= step);
+            spelling.set(step, { letter: LETTERS[i], alteration: step - LETTER_STEPS[i] });
+        }
+        return spelling;
+    }
+    scaleFromKey(key);   // validates the key
+    const count = Number(key[0]);
+    const flats = key.endsWith('b');
+    const altered = flats ? [...SHARP_ORDER].reverse().slice(0, count) : [...SHARP_ORDER].slice(0, count);
+    LETTERS.forEach((letter, i) => {
+        const alteration = altered.includes(letter) ? (flats ? -1 : 1) : 0;
+        spelling.set(mod(LETTER_STEPS[i] + alteration, 12), { letter, alteration });
+    });
+    return spelling;
+}
+
+/**
+ * Name a detected pitch by its nearest scale note once the key drift is taken out, as the spread
+ * does: with a drift of +30 cents, a pitch 30 cents above A4 is "A4 +0".
+ *
+ * @param {number} frequency Hz
+ * @param {number} drift cents, the key fit in effect (0 if there is none)
+ * @param {Map<number, {letter:string, alteration:number}>} spelling from scaleSpelling
+ * @returns {{name:string, midi:number, cents:number}} name with octave (scientific pitch, by
+ *   letter, so Cb4 is the B below middle C sounding), the scale note's MIDI number before drift,
+ *   and the deviation from it in cents
+ */
+export function nearestScaleNote(frequency, drift, spelling) {
+    const exact = 69 + 12 * Math.log2(frequency / REFERENCE_A4) - drift / 100;
+    let best = null;
+    for (const [step, spelled] of spelling) {
+        const midi = step + 12 * Math.round((exact - step) / 12);
+        if (best === null || Math.abs(exact - midi) < Math.abs(exact - best.midi)) {
+            best = { midi, spelled };
+        }
+    }
+    const { letter, alteration } = best.spelled;
+    const accidental = alteration > 0 ? '#' : alteration < 0 ? 'b' : '';
+    const octave = Math.floor((best.midi - alteration) / 12) - 1;
+    return { name: `${letter}${accidental}${octave}`, midi: best.midi, cents: 100 * (exact - best.midi) };
+}
+
 /** Floored modulo, like Octave's mod: the result has the sign of the divisor. */
 function mod(x, m) {
     return ((x % m) + m) % m;

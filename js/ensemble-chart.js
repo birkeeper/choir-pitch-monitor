@@ -65,7 +65,9 @@ export class EnsembleChart {
     #canvas;
     #tooltip;
     #background = document.createElement('canvas');
-    #data = null;          // { time, keyDrift, spread } parallel arrays
+    // { time, keyDrift, spread } parallel arrays, plus an optional notesAt(index) giving the notes
+    // detected at time[index] as [{text, equalCents}], low to high
+    #data = null;
     #duration = 0;
     #playhead = 0;
     #hoverX = null;
@@ -269,14 +271,36 @@ export class EnsembleChart {
 
         const drift = this.#data.keyDrift[index];
         const spread = this.#data.spread[index];
-        this.#tooltip.textContent = `${formatTime(times[index])}   drift ${formatCents(drift, true)}`
-            + `   spread ${formatCents(spread, false)}`;
+        this.#tooltip.replaceChildren(`${formatTime(times[index])}  drift ${formatCents(drift, true)}`
+            + `  spread ${formatCents(spread, false)}`);
+        const notes = this.#data.notesAt?.(index);
+        if (notes) { this.#tooltip.append('\n', ...notesNodes(notes)); }
         this.#tooltip.classList.remove('d-none');
         // Keep the tooltip inside the chart: to the right of the crosshair unless it would overflow.
         const width = this.#tooltip.offsetWidth;
         const placed = x + 8 + width <= this.#width ? x + 8 : x - 8 - width;
         this.#tooltip.style.left = `${Math.max(0, placed)}px`;
     }
+}
+
+/**
+ * The detected notes of one frame as tooltip content, separated by " | ". Each is coloured by its
+ * deviation from equal temperament (drift included) on the spread panel's scale.
+ *
+ * @param {{text:string, equalCents:number}[]} notes
+ */
+function notesNodes(notes) {
+    if (notes.length === 0) { return ['–']; }
+    const spreadPanel = PANELS.find((panel) => panel.key === 'spread');
+    const nodes = [];
+    notes.forEach((note, i) => {
+        if (i > 0) { nodes.push(' | '); }
+        const span = document.createElement('span');
+        span.textContent = note.text;
+        span.style.color = traceColor(spreadPanel, note.equalCents);
+        nodes.push(span);
+    });
+    return nodes;
 }
 
 /** A cents value for display; '–' where there is none. */
