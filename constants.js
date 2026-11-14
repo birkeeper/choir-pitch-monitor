@@ -138,3 +138,11 @@ export const DRIFT_YELLOW = 50;
 export const DRIFT_RED = 100;
 export const SPREAD_YELLOW = 25;
 export const SPREAD_RED = 50;
+
+// Fisheye zoom of the two charts' time axis (Sarkar & Brown, 1992, "Graphical fisheye views of
+// graphs"). Each point at normalised distance x from the focus, taken as a fraction of D_max, moves
+// to G(x) = (d + 1) x / (d x + 1): d = 0 leaves the axis linear and the magnification at the focus
+// is d + 1, falling to 1 / (d + 1) at distance D_max. D_max is the distance from the focus to the
+// edge of the lens, so the lens stays inside the recording and everything beyond it is untouched.
+export const FISHEYE_D_MAX = 60;            // s, D_max
+export const FISHEYE_DISTORTION_MAX = 3;    // the slider runs from 0 to this, in steps of 0.1

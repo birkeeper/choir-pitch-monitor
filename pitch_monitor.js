@@ -12,7 +12,7 @@ import { EnsembleChart, latestIndex, formatCents } from './js/ensemble-chart.js'
 import {
     SAMPLE_RATE, FRAME_RATE, FRAME_DURATION, CENTS_PER_BIN, N_BINS, REFERENCE_A4,
     DEFAULT_THRESHOLD, KEY_FIT_WINDOW_MIN, KEY_FIT_WINDOW_MAX, KEY_FIT_WINDOW_DEFAULT,
-    MAX_FRAME_PITCHES, ENSEMBLE_F_MIN, ENSEMBLE_F_MAX,
+    MAX_FRAME_PITCHES, ENSEMBLE_F_MIN, ENSEMBLE_F_MAX, FISHEYE_DISTORTION_MAX,
 } from './constants.js';
 
 // Set by version.js, which the page loads before this module; it also names the service worker's cache.
@@ -39,6 +39,8 @@ const elements = {
     key: document.getElementById('key'),
     smoothness: document.getElementById('smoothness'),
     smoothnessValue: document.getElementById('smoothnessValue'),
+    zoom: document.getElementById('zoom'),
+    zoomValue: document.getElementById('zoomValue'),
     driftNow: document.getElementById('driftNow'),
     spreadNow: document.getElementById('spreadNow'),
     chart: document.getElementById('ensembleChart'),
@@ -492,6 +494,15 @@ elements.key.addEventListener('click', foldKey);
 elements.smoothness.addEventListener('input', readSmoothness);
 elements.smoothness.addEventListener('change', trackEnsemble);
 readSmoothness();
+
+elements.zoom.max = FISHEYE_DISTORTION_MAX;
+function applyZoom() {
+    const distortion = clamp(Number(elements.zoom.value) || 0, 0, FISHEYE_DISTORTION_MAX);
+    elements.zoomValue.textContent = `d ${distortion.toFixed(1)}`;
+    chart.setZoom(distortion);
+}
+elements.zoom.addEventListener('input', applyZoom);
+applyZoom();
 
 elements.audio.addEventListener('play', followPlayback);
 for (const type of ['timeupdate', 'seeked', 'loadedmetadata']) {

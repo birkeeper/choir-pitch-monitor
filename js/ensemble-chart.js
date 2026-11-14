@@ -7,7 +7,7 @@
 
 import {
     DRIFT_PLOT_MIN, DRIFT_PLOT_MAX, SPREAD_PLOT_MIN, SPREAD_PLOT_MAX,
-    DRIFT_YELLOW, DRIFT_RED, SPREAD_YELLOW, SPREAD_RED,
+    DRIFT_YELLOW, DRIFT_RED, SPREAD_YELLOW, SPREAD_RED, FISHEYE_D_MAX,
 } from '../constants.js';
 
 // The app is always in Bootstrap's dark theme, so only the dark steps are needed.
@@ -21,6 +21,12 @@ const COLORS = {
 
 const MARGIN = { left: 44, right: 10, top: 18, gap: 42, bottom: 22 };
 const FONT = '12px system-ui, sans-serif';
+
+// Each segment of a curve is LINE_WIDTH times the fisheye's local magnification wide, so the lines
+// thicken where the axis is stretched and thin where it is squeezed, but never below MIN_LINE_WIDTH
+// so the squeezed parts stay visible. Without zoom the magnification is 1 everywhere.
+const LINE_WIDTH = 2;
+const MIN_LINE_WIDTH = 1;
 
 // Trace colour stops, as [r, g, b]: in tune, the first threshold, the second threshold and beyond.
 const GREEN = [60, 179, 113];
@@ -71,6 +77,8 @@ export class EnsembleChart {
     #duration = 0;
     #playhead = 0;
     #hoverX = null;
+    #zoom = 0;             // fisheye distortion d
+    #focus = 0;            // s, the fisheye focus the background was last rendered with
     #width = 0;
     #height = 0;
     #ratio = 1;
@@ -106,6 +114,13 @@ export class EnsembleChart {
         this.#draw();
     }
 
+    /** Fisheye distortion d; 0 is a linear time axis. */
+    setZoom(distortion) {
+        this.#zoom = distortion;
+        this.#render();
+        this.#draw();
+    }
+
     setPlayhead(seconds) {
         this.#playhead = seconds;
         this.#draw();
@@ -122,9 +137,47 @@ export class EnsembleChart {
     }
 
     #x(seconds) {
-        return MARGIN.left + (seconds / this.#duration) * this.#plotWidth();
+        return MARGIN.left + (this.#fisheye(seconds) / this.#duration) * this.#plotWidth();
     }
 
+    /** The time the fisheye is centred on: the pointer while it is over the chart, else the playhead. */
+    #wantedFocus() {
+        return this.#hoverX !== null ? this.#timeAt(this.#hoverX) : this.#playhead;
+    }
+
+    /**
+     * Distance from the focus to the edge of the lens on the side of `delta` (seconds from the
+     * focus): D_max, or the distance to the end of the recording if that is nearer.
+     */
+    #reach(delta) {
+        return Math.min(FISHEYE_D_MAX, delta >= 0 ? this.#duration - this.#focus : this.#focus);
+    }
+
+    /**
+     * Where the fisheye puts a time, as a time on the linear axis: Sarkar & Brown's
+     * G(x) = (d + 1) x / (d x + 1) on the distance from the focus, scaled by the lens reach. The
+     * focus and the lens edges stay where they are, so the lens blends into the rest of the axis.
+     */
+    #fisheye(seconds) {
+        const d = this.#zoom;
+        const delta = seconds - this.#focus;
+        const reach = this.#reach(delta);
+        if (d <= 0 || reach <= 0 || Math.abs(delta) >= reach) { return seconds; }
+        const x = Math.abs(delta) / reach;
+        return this.#focus + Math.sign(delta) * ((d + 1) * x / (d * x + 1)) * reach;
+    }
+
+    /** G'(x) = (d + 1) / (d x + 1)^2: how much the fisheye stretches the axis at a time. */
+    #magnification(seconds) {
+        const d = this.#zoom;
+        const delta = seconds - this.#focus;
+        const reach = this.#reach(delta);
+        if (d <= 0 || reach <= 0 || Math.abs(delta) >= reach) { return 1; }
+        return (d + 1) / (d * Math.abs(delta) / reach + 1) ** 2;
+    }
+
+    /** Time at a pixel on the linear axis. The focus sits at its linear position, so while the
+     *  pointer is the focus this is also the time under it with the fisheye on. */
     #timeAt(x) {
         const fraction = (x - MARGIN.left) / this.#plotWidth();
         return Math.min(this.#duration, Math.max(0, fraction * this.#duration));
@@ -150,6 +203,7 @@ export class EnsembleChart {
 
     /** Axes, grid and curves into the offscreen canvas. */
     #render() {
+        this.#focus = this.#duration > 0 ? this.#wantedFocus() : 0;
         const context = this.#background.getContext('2d');
         context.setTransform(this.#ratio, 0, 0, this.#ratio, 0, 0);
         context.clearRect(0, 0, this.#width, this.#height);
@@ -186,7 +240,6 @@ export class EnsembleChart {
             context.beginPath();
             context.rect(left, top, right - left, bottom - top);
             context.clip();
-            context.lineWidth = 2;
             context.lineCap = 'round';
             // One stroke per segment, its colour blended along it from one value to the next. Round
             // caps close the joins between segments.
@@ -203,6 +256,8 @@ export class EnsembleChart {
                 gradient.addColorStop(0, traceColor(panel, values[i - 1]));
                 gradient.addColorStop(1, traceColor(panel, values[i]));
                 context.strokeStyle = gradient;
+                context.lineWidth = Math.max(MIN_LINE_WIDTH, LINE_WIDTH
+                    * this.#magnification(0.5 * (times[i - 1] + times[i])));
                 context.beginPath();
                 context.moveTo(x0, y0);
                 context.lineTo(x1, y1);
@@ -216,17 +271,28 @@ export class EnsembleChart {
             context.textBaseline = 'top';
             context.textAlign = 'center';
             const labelTop = this.#height - MARGIN.bottom + 6;
-            const step = niceTimeStep(this.#duration, this.#plotWidth());
-            for (let t = 0; t <= this.#duration; t += step) {
+            // Whole seconds, each labelled only if it is a multiple of the step that suits the axis
+            // there: finer where the fisheye stretches it, coarser where it squeezes it.
+            let lastX = -Infinity;
+            for (let t = 0; t <= this.#duration; t++) {
+                const step = niceTimeStep(this.#duration / this.#magnification(t), this.#plotWidth());
+                if (t % step !== 0) { continue; }
                 const x = this.#x(t);
                 // Skip a last label that would run off the right edge.
                 if (x + 16 > this.#width) { break; }
+                if (x - lastX < 40) { continue; }
                 context.fillText(formatTime(t), x, labelTop);
+                lastX = x;
             }
         }
     }
 
     #draw() {
+        // The lens follows its focus: redraw the curves once it has moved by half a pixel.
+        if (this.#zoom > 0 && this.#duration > 0 && this.#plotWidth() > 0
+            && Math.abs(this.#wantedFocus() - this.#focus) * this.#plotWidth() / this.#duration >= 0.5) {
+            this.#render();
+        }
         const context = this.#canvas.getContext('2d');
         context.setTransform(1, 0, 0, 1, 0, 0);
         context.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
@@ -314,7 +380,7 @@ export function formatCents(value, signed) {
 /** A round label spacing that leaves at least ~70 px between time labels. */
 function niceTimeStep(duration, width) {
     const minimum = (70 / Math.max(width, 1)) * duration;
-    for (const step of [5, 10, 15, 30, 60, 120, 300, 600]) {
+    for (const step of [1, 2, 5, 10, 15, 30, 60, 120, 300, 600]) {
         if (step >= minimum) { return step; }
     }
     return 1200;
