@@ -71,16 +71,20 @@ export const WINDOW_FRAMES = 172;
 export const WINDOW_TRIM_FRAMES = 15;
 
 // The paper's tau_n, which it fine-tunes per dataset ("we fine-tune the threshold parameter tau_n
-// on the validation dataset"), so there is no universal value to take from it. 0.3 was chosen by
-// sweeping a choir excerpt: it yields ~1.5 detections per frame, where 0.5 yields 0.25 (far too
-// strict for four-part singing) and 0.15 and below collapses into noise -- 70 per frame at 0.1.
-// Expect to tune it per ensemble and room; the UI exposes it and re-derives instantly.
+// on the validation dataset"), so there is no universal value to take from it, and a value tuned
+// for one model does not carry over to another: re-run tests/threshold-sweep.mjs whenever
+// MODEL_URL changes.
 //
-//   tau    peaks/frame   in band
-//   0.15      5.20         38%
-//   0.20      3.03         39%
-//   0.30      1.51         51%
-//   0.50      0.25         58%
+// Sweep for distill04 on "The A Team" (Vocalcious, 3b, 221 s, four parts), whose drift of about
+// +30 cents is confirmed. The drift barely depends on tau from 0.10 to 0.30; above 0.4 a growing
+// share of frames goes silent. 0.17 gives ~3.5 detections per frame, about one per voice, and
+// never exceeds MAX_FRAME_PITCHES. The UI exposes the threshold and re-derives instantly.
+//
+//   tau    peaks/frame   voiced   drift 25/50/75%/end   spread
+//   0.10      4.20        98%       26  10  31  23      16.5
+//   0.17      3.50        97%       26  10  32  23      16.1
+//   0.30      2.58        92%       26  10  30  24      15.4
+//   0.50      1.40        72%       26  15  30  25      14.7
 export const DEFAULT_THRESHOLD = 0.17;
 
 // --- Tuning -------------------------------------------------------------------------------------
