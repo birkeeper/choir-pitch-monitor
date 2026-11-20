@@ -90,8 +90,6 @@ export const DEFAULT_THRESHOLD = 0.17;
 // --- Tuning -------------------------------------------------------------------------------------
 
 export const REFERENCE_A4 = 440;           // fixed, by design decision 6 in PLAN.md
-export const DEFAULT_BAND_LOWER_CENTS = -20;
-export const DEFAULT_BAND_UPPER_CENTS = 20;
 
 // Sub-bin refinement matters more with this model than the resolution alone suggests. At 33.3 cents
 // per bin, and with the grid aligned exactly to equal temperament (see F_MIN), a raw bin centre can
@@ -119,12 +117,36 @@ export const KEY_FIT_START_RANGE = 100;    // cents; the choir is assumed to sta
 export const KEY_FIT_JUMP = 50;            // cents; search range around the previous fit (jumpK)
 export const KEY_FIT_RIVAL_RATIO = 0.85;   // a rival scoring this fraction of the best is ambiguous (qK)
 export const KEY_FIT_RIVAL_RANGE = 30;     // cents; rivals are looked for within this of best +/-100, +/-200 (compK)
-export const KEY_FIT_MIN_DETECTIONS = 100; // fewer detections in the window: no fit (minDetK)
+
+// Fewer samples in the window than this many per frame of the window: no fit (minDetK in the
+// script, which used a fixed 100 for its 2 s window). The app feeds the tracker only the unmasked
+// samples of confirmed pitch tracks, and the window can be as short as KEY_FIT_WINDOW_MIN, so the
+// minimum scales with the window: 0.5 means on average half a sample per frame, e.g. a single
+// steady voice for half of the window. The shortest window (0.5 s = 43 frames) then needs 22.
+export const KEY_FIT_MIN_DETECTIONS_PER_FRAME = 0.5;
 
 // The window (WK in the script; the spread window WS equals it) is the user's smoothness setting.
-export const KEY_FIT_WINDOW_MIN = 2;       // s
+export const KEY_FIT_WINDOW_MIN = 0.5;     // s
 export const KEY_FIT_WINDOW_MAX = 8;       // s
 export const KEY_FIT_WINDOW_DEFAULT = 2;   // s, the value the script was tuned with
+
+// --- Pitch tracks ---------------------------------------------------------------------------------
+//
+// The ensemble is measured only on the unmasked samples of pitch tracks, found causally with SORT
+// (Bewley et al., 2016) in one dimension: worker/pitch-tracker.js. The first frames of a note are
+// unreliable -- the pitch scoops up to the note -- so they are masked, and detections that never
+// settle into a track (noise, overtones, a voice that just breathes) are left out altogether.
+export const TRACK_MAX_GAP_FRAMES = 3;     // frames a track may go undetected before it ends
+export const TRACK_MASK_FRAMES = 5;        // frames after a track starts whose samples are masked
+export const TRACK_MAX_DISTANCE_CENTS = 50; // furthest a detection may be from a track's prediction
+export const TRACK_MIN_HITS = 10;          // detections a track needs to be confirmed (and kept)
+
+// Kalman filter of each track: state is pitch (cents) and its velocity (cents/frame), constant
+// velocity with random acceleration. Not user settings; chosen so the filter follows vibrato
+// (about +/-50 cents at 6 Hz, i.e. up to ~10 cents/frame^2) without chasing single-frame noise.
+export const TRACK_MEASUREMENT_STD_CENTS = 25;   // std of a detection around the true pitch
+export const TRACK_ACCELERATION_STD = 2;         // cents/frame^2
+export const TRACK_INITIAL_VELOCITY_STD = 15;    // cents/frame, uncertainty of a new track's velocity
 
 // Fixed vertical ranges of the drift and spread plots, in cents.
 export const DRIFT_PLOT_MIN = -200;

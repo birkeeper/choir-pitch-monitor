@@ -76,45 +76,16 @@
         </div>
     </div>
 
-    <!-- Analysis settings. Changing any of these re-derives the notes from the cached salience
-         map, so it is instant -- no GPU work is repeated. -->
-    <div class="d-flex flex-column mt-2 border border-2 rounded-2 w-100">
-        <div class="d-flex flex-row align-items-center my-2 w-100 border-bottom border-2">
-            <div class="ms-2 mb-1 fw-bold">Analysis settings</div>
-        </div>
-        <div class="d-flex flex-row flex-wrap align-items-center mb-2 w-100">
-            <label class="setting ms-2">salience threshold
-                <input type="number" id="threshold" value="0.30" min="0.05" max="0.95" step="0.05">
-            </label>
-            <label class="setting ms-2">in-tune band lower
-                <input type="number" id="bandLower" value="-20" min="-50" max="0" step="1"> ¢
-            </label>
-            <label class="setting ms-2">upper
-                <input type="number" id="bandUpper" value="20" min="0" max="50" step="1"> ¢
-            </label>
-            <label class="setting ms-2">
-                <input type="checkbox" id="refine" checked> sub-bin refinement
-            </label>
-        </div>
-    </div>
-
-    <!-- Results -->
+    <!-- The detected pitches that belong to pitch tracks. Shares its time axis, zoom, playhead and
+         cursor with the ensemble chart. -->
     <div class="d-flex flex-column mt-2 mb-3 border border-2 rounded-2 w-100">
         <div class="d-flex flex-row align-items-center my-2 w-100 border-bottom border-2">
-            <div class="ms-2 mb-1 fw-bold">Results</div>
+            <div class="ms-2 mb-1 fw-bold">Pitch</div>
         </div>
-        <pre id="summary" class="mx-2 mb-2">No analysis yet.</pre>
-        <div class="d-flex flex-row flex-wrap align-items-center mb-2">
-            <button id="downloadDetail" class="button-label ms-2" disabled>Download CSV (per detection)</button>
-            <button id="downloadFrames" class="button-label ms-2" disabled>Download TSV (one row per frame)</button>
-            <button id="downloadFrameNotes" class="button-label ms-2" disabled>Download CSV (notes per frame)</button>
+        <div class="chart-wrap pitch-wrap mx-2 mb-2">
+            <canvas id="pitchChart" aria-label="Detected pitches of the pitch tracks over time"></canvas>
+            <div id="pitchTooltip" class="chart-tooltip d-none"></div>
         </div>
-        <p class="mx-2 small text-secondary">
-            The per-detection CSV has one row per detected pitch with its deviation from equal
-            temperament. The TSV is the same detections in wide form &mdash; one row per frame,
-            <code>time</code> followed by the frequencies sounding in that frame &mdash; which reads
-            directly as a dense time series.
-        </p>
     </div>
 
 </div>

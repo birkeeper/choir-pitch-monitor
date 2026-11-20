@@ -1,18 +1,23 @@
-// App shell: load a recording, run the analysis worker, track ensemble drift and spread, export CSV.
+// App shell: load a recording, run the analysis worker, find pitch tracks, and show the ensemble's
+// drift and spread and the pitches of the tracks.
 //
-// Drift and spread are tracked by worker/ensemble.js, which is causal and fed frame by frame, so a
-// recording is reviewed with exactly the numbers a live run would have shown at each moment.
+// Everything after the worker's salience map is causal and fed frame by frame (worker/pitch-tracker.js
+// and worker/ensemble.js, run by worker/ensemble-pipeline.js), so a recording is reviewed with
+// exactly the numbers a live run would have shown at each moment.
 
 import { AudioSource } from './js/audio-source.js';
-import { extractPeaks, peaksToCsv, peaksToFrameCsv, peaksToFrameNoteCsv }
-    from './worker/notes.js';
-import { EnsembleTracker, KEY_SIGNATURES, scaleSpelling, nearestScaleNote }
-    from './worker/ensemble.js';
-import { EnsembleChart, latestIndex, formatCents } from './js/ensemble-chart.js';
+import { extractPeaks } from './worker/notes.js';
+import { KEY_SIGNATURES, scaleSpelling } from './worker/ensemble.js';
+import { trackEnsemble } from './worker/ensemble-pipeline.js';
+import { TimeAxis } from './js/time-axis.js';
+import { latestIndex, formatCents } from './js/time-chart.js';
+import { EnsembleChart } from './js/ensemble-chart.js';
+import { PitchChart } from './js/pitch-chart.js';
+import { buildPitchData } from './js/pitch-data.js';
 import {
-    SAMPLE_RATE, FRAME_RATE, FRAME_DURATION, CENTS_PER_BIN, N_BINS, REFERENCE_A4,
-    DEFAULT_THRESHOLD, KEY_FIT_WINDOW_MIN, KEY_FIT_WINDOW_MAX, KEY_FIT_WINDOW_DEFAULT,
-    MAX_FRAME_PITCHES, ENSEMBLE_F_MIN, ENSEMBLE_F_MAX, FISHEYE_DISTORTION_MAX,
+    SAMPLE_RATE, FRAME_RATE, CENTS_PER_BIN, N_BINS, REFERENCE_A4,
+    DEFAULT_THRESHOLD, DEFAULT_REFINE, KEY_FIT_WINDOW_MIN, KEY_FIT_WINDOW_MAX,
+    KEY_FIT_WINDOW_DEFAULT, FISHEYE_DISTORTION_MAX,
 } from './constants.js';
 
 // Set by version.js, which the page loads before this module; it also names the service worker's cache.
@@ -28,14 +33,6 @@ const elements = {
     progressBar: document.getElementById('progressBar'),
     progressLabel: document.getElementById('progressLabel'),
     audio: document.getElementById('audioElement'),
-    summary: document.getElementById('summary'),
-    downloadDetail: document.getElementById('downloadDetail'),
-    downloadFrames: document.getElementById('downloadFrames'),
-    downloadFrameNotes: document.getElementById('downloadFrameNotes'),
-    threshold: document.getElementById('threshold'),
-    bandLower: document.getElementById('bandLower'),
-    bandUpper: document.getElementById('bandUpper'),
-    refine: document.getElementById('refine'),
     key: document.getElementById('key'),
     smoothness: document.getElementById('smoothness'),
     smoothnessValue: document.getElementById('smoothnessValue'),
@@ -45,6 +42,8 @@ const elements = {
     spreadNow: document.getElementById('spreadNow'),
     chart: document.getElementById('ensembleChart'),
     chartTooltip: document.getElementById('chartTooltip'),
+    pitchChart: document.getElementById('pitchChart'),
+    pitchTooltip: document.getElementById('pitchTooltip'),
 };
 
 elements.version.textContent = VERSION;
@@ -60,32 +59,19 @@ Object.assign(elements.smoothness, {
     min: KEY_FIT_WINDOW_MIN, max: KEY_FIT_WINDOW_MAX, step: 0.5, value: KEY_FIT_WINDOW_DEFAULT,
 });
 
-const chart = new EnsembleChart(elements.chart, elements.chartTooltip, (seconds) => {
+// One time axis for both charts: they share the zoom, the playhead and the cursor.
+const axis = new TimeAxis();
+const seek = (seconds) => {
     elements.audio.currentTime = seconds;
     showPlayhead();
-});
+};
+const ensembleChart = new EnsembleChart(elements.chart, elements.chartTooltip, axis, seek);
+const pitchChart = new PitchChart(elements.pitchChart, elements.pitchTooltip, axis, seek);
 
 /** Everything about the recording currently loaded. Null until one is analysed. */
 let session = null;
-/** How the model was adapted to this machine's GPU; reported by the worker on READY. */
-let device = null;
 let worker = null;
 let analysing = false;
-
-/**
- * Describe how the model is being run.
- *
- * The window size and the trimmed overlap are fixed by the converted graph rather than chosen, but
- * they set how much redundant work each analysis does, so they are worth showing next to a timing.
- */
-function describePlan(backend, plan) {
-    if (!plan) { return ''; }
-    const overlap = plan.usableFrames
-        ? (plan.windowFrames / plan.usableFrames).toFixed(2)
-        : '?';
-    return `Window ${plan.windowFrames} frames (${plan.usableFrames} usable after trimming `
-        + `${plan.trimFrames} each side, ${overlap}x overhead), ${plan.bins} bins`;
-}
 
 function alertUser(message, variant = 'danger') {
     const wrapper = document.createElement('div');
@@ -118,6 +104,12 @@ function ensureWorker() {
 
 // Inference is the only stage; the model computes its own CQT internally.
 
+/** The line next to the Load button: what is loaded, and what is happening to it. */
+let loadedInfo = '';
+function setMessage(status) {
+    elements.message.textContent = status ? `${loadedInfo} - ${status}` : loadedInfo;
+}
+
 async function analyse(file) {
     if (analysing) { return; }
 
@@ -125,29 +117,25 @@ async function analyse(file) {
         session.source.dispose();
         session = null;
     }
-    elements.downloadDetail.disabled = true;
-    elements.downloadFrames.disabled = true;
-    elements.downloadFrameNotes.disabled = true;
-    elements.summary.textContent = 'Decoding...';
     elements.audio.classList.add('d-none');
-    chart.setData(null, 0);
-    showPlayhead();
+    showRecording(null);
     askForKey();
 
     let source;
     try {
         setProgress(0, 'decoding');
+        elements.message.textContent = 'Decoding...';
         source = await AudioSource.load(file);
     } catch (error) {
         setProgress(0, 'idle');
-        elements.summary.textContent = 'No analysis yet.';
+        elements.message.textContent = 'Choose a FLAC, WAV or MP3 recording.';
         alertUser(error.message);
         return;
     }
 
-    elements.message.textContent =
-        `${source.info.name} - ${formatDuration(source.duration)}, `
+    loadedInfo = `${source.info.name} - ${formatDuration(source.duration)}, `
         + `${source.info.decodedChannels} channel(s) decoded to mono at ${SAMPLE_RATE} Hz`;
+    setMessage('');
     elements.audio.src = source.objectUrl;
     elements.audio.classList.remove('d-none');
 
@@ -161,16 +149,11 @@ async function analyse(file) {
         switch (data.type) {
             case 'STATUS':
                 setProgress(0, 'loading model');
-                elements.summary.textContent = data.message;
+                setMessage(data.message);
                 break;
 
             case 'READY':
-                device = data.plan;
-                elements.summary.textContent =
-                    `Backend: ${data.backend}\n`
-                    + `Model: ${data.source.architecture}\n`
-                    + `${describePlan(data.backend, data.plan)}\n`
-                    + `Analysing ${formatDuration(source.duration)} of audio...`;
+                setMessage(`analysing on ${data.backend}...`);
                 break;
 
             case 'PROGRESS': {
@@ -184,22 +167,30 @@ async function analyse(file) {
                 analysing = false;
                 elements.cancel.classList.add('d-none');
                 setProgress(1, 'done');
+                setMessage(`analysed on ${data.backend} in ${data.timing.total.toFixed(1)} s `
+                    + `(${data.timing.realTimeFactor.toFixed(2)}x real-time)`);
                 session = {
                     source,
-                    salience: new Float32Array(data.salience),
                     frames: data.frames,
-                    backend: data.backend,
-                    timing: data.timing,
                     audioSeconds: data.audioSeconds,
+                    // The salience map is fixed, so the detections are made once.
+                    peaks: extractPeaks(new Float32Array(data.salience), data.frames, {
+                        threshold: DEFAULT_THRESHOLD,
+                        refine: DEFAULT_REFINE,
+                        referenceA4: REFERENCE_A4,
+                    }),
                 };
-                refresh();
+                // Exposed so the analysis can be inspected from the console or an automated browser
+                // run. Read-only by convention.
+                window.__session = session;
+                showRecording(session);
                 break;
 
             case 'CANCELLED':
                 analysing = false;
                 elements.cancel.classList.add('d-none');
                 setProgress(0, 'cancelled');
-                elements.summary.textContent = 'Analysis cancelled.';
+                setMessage('analysis cancelled.');
                 source.dispose();
                 break;
 
@@ -207,7 +198,7 @@ async function analyse(file) {
                 analysing = false;
                 elements.cancel.classList.add('d-none');
                 setProgress(0, 'failed');
-                elements.summary.textContent = 'Analysis failed.';
+                setMessage('analysis failed.');
                 alertUser(`Analysis failed: ${data.message}`);
                 console.error(data.stack);
                 break;
@@ -227,111 +218,35 @@ async function analyse(file) {
     source.samples = new Float32Array(0);
 }
 
+/** Point the charts at a new recording (a session), or at none (null). */
+function showRecording(newSession) {
+    axis.setRecording(newSession?.audioSeconds ?? 0, newSession?.frames ?? 0);
+    if (!newSession) {
+        ensembleChart.setData(null);
+        pitchChart.setData(null);
+        showPlayhead();
+        return;
+    }
+    updateEnsemble();
+}
+
 /**
- * Re-derive notes from the cached salience map and update the summary.
+ * Run pitch tracking and the ensemble tracker over the whole recording and show the result.
  *
- * Every analysis setting feeds only this function, which is why changing one is instant: the
- * network is not involved.
+ * Both are fed frame by frame exactly as they would be live (see worker/ensemble-pipeline.js), so
+ * the curves at any moment only depend on the audio before it, and a full re-run is cheap enough to
+ * repeat whenever the key or the smoothness changes.
  */
-function refresh() {
+function updateEnsemble() {
     if (!session) { return; }
-
-    const options = readSettings();
-    const peaks = extractPeaks(session.salience, session.frames, {
-        threshold: options.threshold,
-        refine: options.refine,
-        referenceA4: REFERENCE_A4,
-    });
-
-    session.peaks = peaks;
-    session.options = options;
-    // Exposed so the analysis can be inspected from the console or an automated browser run
-    // without going through the download machinery. Read-only by convention.
-    window.__session = session;
-
-    elements.downloadDetail.disabled = peaks.count === 0;
-    elements.downloadFrames.disabled = false;
-    elements.downloadFrameNotes.disabled = peaks.count === 0;
-    trackEnsemble();
-}
-
-/**
- * Run the ensemble tracker over the whole recording and show the result.
- *
- * The tracker is fed frame by frame exactly as it would be live, silent frames included, so the
- * curve at any moment only depends on the audio before it. That makes a full re-run cheap enough
- * to repeat whenever the key or the smoothness changes.
- */
-function trackEnsemble() {
-    if (!session?.peaks) { return; }
     const { peaks, frames } = session;
-    const tracker = new EnsembleTracker({ key: elements.key.value, window: readSmoothness() });
-    const time = [];
-    const keyDrift = [];
-    const spread = [];
-    let i = 0;
-    for (let frame = 0; frame < frames; frame++) {
-        const first = i;
-        while (i < peaks.count && peaks.frame[i] === frame) { i++; }
-        const fits = tracker.push(frame * FRAME_DURATION,
-            peaks.frequency.subarray(first, i), peaks.salience.subarray(first, i));
-        for (const fit of fits) {
-            time.push(fit.time);
-            keyDrift.push(fit.keyDrift);
-            spread.push(fit.spread);
-        }
-    }
-    const spelling = scaleSpelling(elements.key.value);
-    const notesAt = (index) => describeNotes(peaks, frames, time[index], heldDrift(keyDrift, index),
-        spelling);
-    session.ensemble = { time, keyDrift, spread, notesAt };
-    chart.setData(session.ensemble, session.audioSeconds);
+    const key = elements.key.value;
+    const result = trackEnsemble(peaks, frames, { key, window: readSmoothness() });
+    session.ensemble = { time: result.time, keyDrift: result.keyDrift, spread: result.spread };
+    session.pitches = buildPitchData(result.samples, session.ensemble, scaleSpelling(key), frames);
+    ensembleChart.setData(session.ensemble);
+    pitchChart.setData(session.pitches);
     showPlayhead();
-    elements.summary.textContent = summarise(session, peaks, session.options);
-}
-
-/** The key fit in effect at fit `index`: a skipped fit (NaN) holds the one before; 0 before any. */
-function heldDrift(keyDrift, index) {
-    for (let i = index; i >= 0; i--) {
-        if (Number.isFinite(keyDrift[i])) { return keyDrift[i]; }
-    }
-    return 0;
-}
-
-/**
- * The notes detected in the frame at `seconds`, low to high, as [{text: "A3 +4", equalCents: 34}, ...]:
- * each named by its nearest scale note after taking out the drift, with its deviation in cents;
- * equalCents is how far it is from that note in equal temperament, i.e. the same plus the drift.
- * Only the detections the tracker uses are listed: the MAX_FRAME_PITCHES most salient within the
- * f0 range. Empty for a silent frame.
- */
-function describeNotes(peaks, frames, seconds, drift, spelling) {
-    const frame = Math.min(frames - 1, Math.round(seconds / FRAME_DURATION));
-    // peaks are ordered by frame: find this frame's run.
-    let low = 0;
-    let high = peaks.count;
-    while (low < high) {
-        const middle = (low + high) >> 1;
-        if (peaks.frame[middle] < frame) { low = middle + 1; } else { high = middle; }
-    }
-    const found = [];
-    for (let i = low; i < peaks.count && peaks.frame[i] === frame; i++) {
-        const frequency = peaks.frequency[i];
-        if (frequency >= ENSEMBLE_F_MIN && frequency <= ENSEMBLE_F_MAX) {
-            found.push({ frequency, salience: peaks.salience[i] });
-        }
-    }
-    return found
-        .sort((a, b) => b.salience - a.salience)
-        .slice(0, MAX_FRAME_PITCHES)
-        .sort((a, b) => a.frequency - b.frequency)
-        .map(({ frequency }) => {
-            const { name, cents } = nearestScaleNote(frequency, drift, spelling);
-            const rounded = Math.round(cents);
-            // The text is measured from the scale note with the drift taken out; the colour from equal
-            // temperament, i.e. with the drift put back.
-            return { text: `${name} ${rounded > 0 ? '+' : ''}${rounded}`, equalCents: cents + drift };
-        });
 }
 
 /**
@@ -365,10 +280,9 @@ function readSmoothness() {
  * display would be showing at that moment.
  */
 function showPlayhead() {
-    const seconds = elements.audio.currentTime || 0;
-    chart.setPlayhead(seconds);
+    axis.setPlayhead(elements.audio.currentTime || 0);
     const ensemble = session?.ensemble;
-    const index = ensemble ? latestIndex(ensemble.time, seconds) : -1;
+    const index = ensemble ? latestIndex(ensemble.time, axis.playhead + 1e-9) : -1;
     elements.driftNow.textContent = formatCents(index >= 0 ? ensemble.keyDrift[index] : NaN, true);
     elements.spreadNow.textContent = formatCents(index >= 0 ? ensemble.spread[index] : NaN, false);
 }
@@ -379,87 +293,14 @@ function followPlayback() {
     if (!elements.audio.paused) { requestAnimationFrame(followPlayback); }
 }
 
-function readSettings() {
-    return {
-        threshold: clamp(Number(elements.threshold.value) || DEFAULT_THRESHOLD, 0.01, 0.99),
-        bandLower: clamp(Number(elements.bandLower.value) || -20, -50, 0),
-        bandUpper: clamp(Number(elements.bandUpper.value) || 20, 0, 50),
-        refine: elements.refine.checked,
-    };
-}
-
 function clamp(value, low, high) {
     return Math.min(high, Math.max(low, value));
-}
-
-function summarise(session, peaks, options) {
-    const { timing, ensemble } = session;
-    let inBand = 0;
-    let flat = 0;
-    let sharp = 0;
-
-    for (let i = 0; i < peaks.count; i++) {
-        if (peaks.cents[i] < options.bandLower) { flat++; }
-        else if (peaks.cents[i] > options.bandUpper) { sharp++; }
-        else { inBand++; }
-    }
-    const fitted = ensemble.keyDrift.filter(Number.isFinite);
-
-    const percent = (count) => peaks.count
-        ? `${((100 * count) / peaks.count).toFixed(1)}%`
-        : 'n/a';
-
-    return [
-        `Recording   ${session.source.info.name}`,
-        `            ${formatDuration(session.audioSeconds)}, ${session.frames} frames `
-            + `at ${FRAME_RATE.toFixed(2)} fps`,
-        '',
-        `Backend     ${session.backend}`,
-        ...(device ? [`Model       ${describePlan(session.backend, device)}`] : []),
-        `Timing      ${timing.total.toFixed(1)} s `
-            + `-> ${timing.realTimeFactor.toFixed(2)}x real-time`,
-        '',
-        `Detections  ${peaks.count} peaks at threshold ${options.threshold.toFixed(2)} `
-            + `(${(peaks.count / session.frames).toFixed(2)} per frame)`,
-        `Tuning      in band [${options.bandLower}, ${options.bandUpper}] cents: `
-            + `${inBand} (${percent(inBand)})`,
-        `            flat:  ${flat} (${percent(flat)})`,
-        `            sharp: ${sharp} (${percent(sharp)})`,
-        `            judged against fixed A=${REFERENCE_A4} Hz`,
-        '',
-        `Ensemble    key ${elements.key.value}, smoothness ${readSmoothness().toFixed(1)} s: `
-            + `${fitted.length} of ${ensemble.time.length} key fits made`,
-        `            drift at the end ${formatCents(fitted.at(-1), true)}`,
-        '',
-        options.refine
-            ? `Resolution  sub-bin refinement on`
-            : `Resolution  sub-bin refinement OFF - the grid is `
-              + `${CENTS_PER_BIN.toFixed(1)} cents per bin and aligned to equal temperament, so\n`
-              + `            deviations can only take the values 0 and +/-${CENTS_PER_BIN.toFixed(1)} cents`,
-    ].join('\n');
 }
 
 function formatDuration(seconds) {
     const minutes = Math.floor(seconds / 60);
     const rest = seconds - 60 * minutes;
     return `${minutes}:${rest.toFixed(1).padStart(4, '0')}`;
-}
-
-function download(filename, text) {
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    // Revoking immediately can race the download in some browsers; one turn of the event loop is
-    // enough for the click to have been handled.
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-function baseName() {
-    const name = session?.source.info.name ?? 'analysis';
-    return name.replace(/\.[^.]+$/, '');
 }
 
 // --- wiring ---------------------------------------------------------------------------------
@@ -478,28 +319,23 @@ elements.cancel.addEventListener('click', () => {
     }
 });
 
-for (const element of [elements.threshold, elements.bandLower, elements.bandUpper,
-    elements.refine]) {
-    element.addEventListener('change', refresh);
-}
-
-// The key and smoothness only feed the tracker, so peak picking is not repeated for them.
+// The key and smoothness only feed the trackers, so peak picking is not repeated for them.
 elements.key.addEventListener('change', () => {
     foldKey();
-    trackEnsemble();
+    updateEnsemble();
 });
 // Clicking the already selected entry fires no change event, but is still a choice: 'none' may be
 // the right key.
 elements.key.addEventListener('click', foldKey);
 elements.smoothness.addEventListener('input', readSmoothness);
-elements.smoothness.addEventListener('change', trackEnsemble);
+elements.smoothness.addEventListener('change', updateEnsemble);
 readSmoothness();
 
 elements.zoom.max = FISHEYE_DISTORTION_MAX;
 function applyZoom() {
     const distortion = clamp(Number(elements.zoom.value) || 0, 0, FISHEYE_DISTORTION_MAX);
     elements.zoomValue.textContent = `d ${distortion.toFixed(1)}`;
-    chart.setZoom(distortion);
+    axis.setZoom(distortion);
 }
 elements.zoom.addEventListener('input', applyZoom);
 applyZoom();
@@ -508,24 +344,6 @@ elements.audio.addEventListener('play', followPlayback);
 for (const type of ['timeupdate', 'seeked', 'loadedmetadata']) {
     elements.audio.addEventListener(type, showPlayhead);
 }
-
-elements.downloadDetail.addEventListener('click', () => {
-    if (!session?.peaks) { return; }
-    download(`${baseName()}_detections.csv`,
-        peaksToCsv(session.peaks, session.options));
-});
-
-elements.downloadFrames.addEventListener('click', () => {
-    if (!session?.peaks) { return; }
-    download(`${baseName()}_frames.tsv`,
-        peaksToFrameCsv(session.peaks, session.frames));
-});
-
-elements.downloadFrameNotes.addEventListener('click', () => {
-    if (!session?.peaks) { return; }
-    download(`${baseName()}_frame_notes.csv`,
-        peaksToFrameNoteCsv(session.peaks, session.frames, session.options));
-});
 
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./service-worker.js')

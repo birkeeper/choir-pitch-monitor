@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onset tracking explorer</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<style>
+  :root { --bg:#14151a; --panel:#1d1f27; --fg:#e6e8ee; --muted:#9097a8; --accent:#4cc9f0; --bad:#ff5a4d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif;
+         display:flex; flex-direction:column; height:100vh; }
+  header { background:var(--panel); padding:10px 16px; display:flex; flex-wrap:wrap; gap:10px 28px; align-items:center; }
+  .slider { display:flex; flex-direction:column; min-width:210px; }
+  .slider label { display:flex; justify-content:space-between; color:var(--muted); font-size:12px; }
+  .slider output { color:var(--fg); font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  #file { display:flex; align-items:center; gap:10px; }
+  #drop { border:1px dashed var(--muted); border-radius:6px; padding:6px 12px; color:var(--muted); }
+  body.dragging #drop { border-color:var(--accent); color:var(--accent); }
+  #status { color:var(--muted); font-size:12px; padding:4px 16px; background:var(--panel); border-top:1px solid #2a2d38;
+            font-variant-numeric:tabular-nums; }
+  #status b { color:var(--fg); font-weight:600; }
+  #error { color:var(--bad); padding:4px 16px; }
+  #plot { flex:1; min-height:0; }
+</style>
+</head>
+<body>
+<header>
+  <div id="file">
+    <input type="file" id="picker" accept=".npz">
+    <span id="drop">or drop a salience .npz here</span>
+  </div>
+  <div class="slider"><label>f0 peak threshold <output id="o-threshold"></output></label>
+    <input type="range" id="threshold" min="0.05" max="0.8" step="0.01" value="0.17"></div>
+  <div class="slider"><label>allowed gap before new track <output id="o-gap"></output></label>
+    <input type="range" id="gap" min="0" max="43" step="1" value="5"></div>
+  <div class="slider"><label>mask after track start <output id="o-mask"></output></label>
+    <input type="range" id="mask" min="0" max="86" step="1" value="9"></div>
+  <div class="slider"><label>max association distance <output id="o-dist"></output></label>
+    <input type="range" id="dist" min="5" max="300" step="5" value="100"></div>
+  <div class="slider"><label>min hits to keep a track <output id="o-hits"></output></label>
+    <input type="range" id="hits" min="1" max="30" step="1" value="5"></div>
+</header>
+<div id="error"></div>
+<div id="status">Load a file.</div>
+<div id="plot"></div>
+
+<script>
+/*__TRACKING_CORE__*/
+</script>
+<script>
+const EMBEDDED = /*__EMBEDDED__*/ null;   // {name, base64} when built with a default file
+
+const PALETTE = ['#4cc9f0', '#f9c74f', '#90be6d', '#f8961e', '#b388eb', '#43aa8b',
+                 '#ffd6a5', '#00f5d4', '#a0c4ff', '#caffbf', '#fdffb6', '#ff9f1c'];
+const MASKED_COLOR = '#ff3b30';
+const MAX_BAND_TRACKS = 500;                   // bands are layout shapes; keep the page responsive
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+const $ = (id) => document.getElementById(id);
+let map = null, fileName = '', heatmap = null, plotReady = false, pending = false;
+
+const noteName = (midi) => NOTE_NAMES[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
+
+function controls() {
+    return {
+        threshold: +$('threshold').value,
+        gapFrames: +$('gap').value,
+        maskFrames: +$('mask').value,
+        maxDistance: +$('dist').value,
+        minHits: +$('hits').value,
+    };
+}
+
+function updateReadouts(c) {
+    $('o-threshold').textContent = c.threshold.toFixed(2);
+    $('o-gap').textContent = `${c.gapFrames} frames`;
+    $('o-mask').textContent = `${c.maskFrames} frames`;
+    $('o-dist').textContent = `${c.maxDistance} cents`;
+    $('o-hits').textContent = `${c.minHits} frames`;
+}
+
+function fmt(x) { return Number.isFinite(x) ? x.toFixed(1) : '–'; }
+
+function compute(c) {
+    const dets = OT.detectF0(map, c.threshold);
+    const { tracks, detTrack } = OT.sortTrack(dets, map.nFrames, {
+        maxDistance: c.maxDistance,
+        maxGapFrames: c.gapFrames,
+        minHits: c.minHits,
+    });
+    OT.maskAndSpread(tracks, c.maskFrames);
+    return { dets, tracks, detTrack };
+}
+
+function tickLayout(range) {
+    // Every semitone when zoomed in; only the C's when zoomed out, so labels never overlap.
+    const [lo, hi] = range;
+    const every = hi - lo <= 30;
+    const vals = [], text = [];
+    for (let m = Math.ceil(lo); m <= Math.floor(hi); m++) {
+        if (every || m % 12 === 0) { vals.push(m); text.push(noteName(m)); }
+    }
+    return { tickvals: vals, ticktext: text };
+}
+
+function render() {
+    pending = false;
+    if (!map) { return; }
+    const c = controls();
+    updateReadouts(c);
+    const { dets, tracks, detTrack } = compute(c);
+    const time = (f) => map.times[f];
+    const midi = (cents) => cents / 100;
+
+    // Detections: unassigned, masked, and unmasked-in-track.
+    const un = { x: [], y: [], text: [] }, mk = { x: [], y: [], text: [] };
+    const kp = { x: [], y: [], text: [], color: [] };
+    const hover = (i, label) =>
+        `${label}<br>t = ${time(dets.frame[i]).toFixed(3)} s<br>${dets.frequency[i].toFixed(2)} Hz` +
+        `<br>${noteName(Math.round(dets.cents[i] / 100))} ${(dets.cents[i] - 100 * Math.round(dets.cents[i] / 100)).toFixed(1)} c` +
+        `<br>salience ${dets.salience[i].toFixed(3)}`;
+    const maskedSet = new Uint8Array(dets.count);
+    for (const t of tracks) { t.det.forEach((d, i) => { if (t.masked[i]) { maskedSet[d] = 1; } }); }
+    for (let i = 0; i < dets.count; i++) {
+        const target = detTrack[i] < 0 ? un : maskedSet[i] ? mk : kp;
+        target.x.push(time(dets.frame[i]));
+        target.y.push(midi(dets.cents[i]));
+        target.text.push(hover(i, detTrack[i] < 0 ? 'unassigned' : `track ${detTrack[i]}` + (maskedSet[i] ? ' (masked)' : '')));
+        if (target === kp) { target.color.push(PALETTE[detTrack[i] % PALETTE.length]); }
+    }
+
+    const traces = [heatmap,
+        { type: 'scattergl', mode: 'markers', name: 'unassigned f0', x: un.x, y: un.y, text: un.text, hoverinfo: 'text',
+          marker: { size: 4, color: 'rgba(0,0,0,0)', line: { color: '#cfd3dc', width: 1 } } },
+    ];
+    for (const t of tracks) {
+        traces.push({
+            type: 'scattergl', mode: 'lines', x: t.frames.map(time), y: t.estimate.map(midi),
+            line: { color: PALETTE[t.id % PALETTE.length], width: 1.5 }, hoverinfo: 'skip', showlegend: false,
+        });
+    }
+    traces.push(
+        { type: 'scattergl', mode: 'markers', name: 'f0 in track (colour = track)', x: kp.x, y: kp.y, text: kp.text, hoverinfo: 'text',
+          marker: { size: 5, color: kp.color.length ? kp.color : PALETTE[0], line: { color: '#000', width: 0.5 } } },
+        { type: 'scattergl', mode: 'markers', name: 'f0 masked (onset)', x: mk.x, y: mk.y, text: mk.text, hoverinfo: 'text',
+          marker: { size: 6, symbol: 'x', color: MASKED_COLOR, line: { color: MASKED_COLOR, width: 1.5 } } },
+        { type: 'scatter', mode: 'lines', name: 'SORT track (Kalman estimate)', x: [null], y: [null],
+          line: { color: '#fff', width: 1.5 } },
+    );
+
+    // Spread bands: dashed outline = all f0s of the track, filled solid = unmasked f0s only.
+    const shapes = [];
+    for (const t of tracks.slice(0, MAX_BAND_TRACKS)) {
+        const color = PALETTE[t.id % PALETTE.length];
+        const band = (s, x0, x1, extra) => Number.isFinite(s.std) && shapes.push({
+            type: 'rect', xref: 'x', yref: 'y', x0: time(x0), x1: time(x1),
+            y0: midi(s.mean - s.std), y1: midi(s.mean + s.std), layer: 'above', ...extra,
+        });
+        band(t.all, t.frames[0], t.frames[t.frames.length - 1],
+            { line: { color, width: 1, dash: 'dot' }, fillcolor: 'rgba(0,0,0,0)' });
+        const keptFrames = t.frames.filter((_, i) => !t.masked[i]);
+        if (keptFrames.length) {
+            band(t.kept, keptFrames[0], keptFrames[keptFrames.length - 1],
+                { line: { color, width: 1.5 }, fillcolor: color + '40' });
+        }
+    }
+
+    const layout = {
+        paper_bgcolor: '#14151a', plot_bgcolor: '#0b0b12', font: { color: '#e6e8ee' },
+        margin: { l: 56, r: 16, t: 8, b: 40 }, uirevision: fileName,
+        xaxis: { title: 'time (s)', gridcolor: '#2a2d38', zeroline: false },
+        yaxis: { title: 'pitch', gridcolor: '#2a2d38', zeroline: false, ...tickLayout(currentYRange()) },
+        legend: { orientation: 'h', y: 1.0, yanchor: 'bottom', x: 0 },
+        shapes, dragmode: 'zoom',
+    };
+    Plotly.react('plot', traces, layout, { responsive: true, scrollZoom: true }).then(() => {
+        if (!plotReady) {
+            plotReady = true;
+            $('plot').on('plotly_relayout', (e) => {
+                const lo = e['yaxis.range[0]'], hi = e['yaxis.range[1]'];
+                if (lo !== undefined && hi !== undefined) { Plotly.relayout('plot', tickLayout([lo, hi])); }
+                else if (e['yaxis.autorange']) { Plotly.relayout('plot', tickLayout(currentYRange())); }
+            });
+        }
+    });
+
+    // Summary.
+    let nMasked = 0, nUnassigned = 0;
+    for (let i = 0; i < dets.count; i++) { if (detTrack[i] < 0) { nUnassigned++; } else if (maskedSet[i]) { nMasked++; } }
+    const weighted = (key) => {
+        let num = 0, den = 0;
+        for (const t of tracks) { if (Number.isFinite(t[key].std)) { num += t[key].std * t[key].n; den += t[key].n; } }
+        return den ? num / den : NaN;
+    };
+    // Compare like with like: spread over the same tracks, all f0s vs. unmasked f0s.
+    $('status').innerHTML =
+        `<b>${fileName}</b> &middot; ${map.nFrames} frames, ${map.times[map.nFrames - 1].toFixed(1)} s &middot; ` +
+        `<b>${dets.count}</b> f0 detections: ${dets.count - nUnassigned} in <b>${tracks.length}</b> tracks ` +
+        `(${nMasked} masked = ${(100 * nMasked / Math.max(1, dets.count - nUnassigned)).toFixed(0)}% of track f0s), ` +
+        `${nUnassigned} unassigned &middot; mean track spread (std): all f0s <b>${fmt(weighted('all'))} c</b>, ` +
+        `unmasked <b>${fmt(weighted('kept'))} c</b>` +
+        (tracks.length > MAX_BAND_TRACKS ? ` &middot; spread bands drawn for first ${MAX_BAND_TRACKS} tracks only` : '');
+}
+
+function currentYRange() {
+    const el = $('plot');
+    return el.layout?.yaxis?.range ?? initialYRange;
+}
+let initialYRange = [36, 84];
+
+function schedule() { if (!pending) { pending = true; requestAnimationFrame(render); } }
+
+function setMap(m, name) {
+    map = m; fileName = name; plotReady = false;
+    Plotly.purge('plot');
+    const rows = [];
+    for (let b = 0; b < m.nBins; b++) {
+        const row = new Float32Array(m.nFrames);
+        for (let f = 0; f < m.nFrames; f++) { row[f] = m.salience[b + m.nBins * f]; }
+        rows.push(row);
+    }
+    const yMidi = Array.from(m.freqs, (f) => 69 + 12 * Math.log2(f / 440));
+    heatmap = {
+        type: 'heatmap', x: Array.from(m.times), y: yMidi, z: rows, zmin: 0, zmax: 1, showscale: false,
+        colorscale: [[0, '#0b0b12'], [1, '#eceff6']], hoverinfo: 'skip', name: 'salience', showlegend: false,
+    };
+    // Initial view: the pitch range that actually contains detections at the current threshold.
+    const dets = OT.detectF0(m, 0.3);
+    if (dets.count) {
+        let lo = Infinity, hi = -Infinity;
+        for (const c of dets.cents) { lo = Math.min(lo, c); hi = Math.max(hi, c); }
+        initialYRange = [lo / 100 - 3, hi / 100 + 3];
+    }
+    schedule();
+    // Force the layout to start at that range (uirevision keeps later zooms).
+    setTimeout(() => Plotly.relayout('plot', { 'yaxis.range': initialYRange }), 0);
+}
+
+async function loadBuffer(buffer, name) {
+    $('error').textContent = '';
+    try { setMap(await OT.loadNpz(buffer), name); }
+    catch (e) { $('error').textContent = `${name}: ${e.message}`; console.error(e); }
+}
+
+async function loadFile(file) { await loadBuffer(await file.arrayBuffer(), file.name); }
+
+$('picker').addEventListener('change', (e) => e.target.files[0] && loadFile(e.target.files[0]));
+for (const ev of ['dragenter', 'dragover']) {
+    window.addEventListener(ev, (e) => { e.preventDefault(); document.body.classList.add('dragging'); });
+}
+for (const ev of ['dragleave', 'drop']) {
+    window.addEventListener(ev, (e) => { e.preventDefault(); document.body.classList.remove('dragging'); });
+}
+window.addEventListener('drop', (e) => e.dataTransfer.files[0] && loadFile(e.dataTransfer.files[0]));
+for (const id of ['threshold', 'gap', 'mask', 'dist', 'hits']) { $(id).addEventListener('input', schedule); }
+updateReadouts(controls());
+
+if (EMBEDDED) {
+    const bytes = Uint8Array.from(atob(EMBEDDED.base64), (ch) => ch.charCodeAt(0));
+    loadBuffer(bytes.buffer, EMBEDDED.name);
+}
+</script>
+</body>
+</html>

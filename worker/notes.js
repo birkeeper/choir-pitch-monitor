@@ -13,9 +13,7 @@
 // same remedy -- continuous estimates come from "the amplitude values of the estimated f0 bin, and
 // those of its neighboring bins in frequency".
 
-import {
-    N_BINS, F_MIN, A0_BIN, BINS_PER_OCTAVE, FRAME_DURATION, REFERENCE_A4, MAX_FRAME_PITCHES,
-} from '../constants.js';
+import { N_BINS, F_MIN, A0_BIN, BINS_PER_OCTAVE, REFERENCE_A4 } from '../constants.js';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -136,100 +134,4 @@ export function extractPeaks(salience, frames, options = {}) {
         midi: Int32Array.from(midiOut),
         count: frameOut.length,
     };
-}
-
-/**
- * Long-format CSV: one row per detected peak, with its deviation from equal temperament at the
- * configured reference.
- */
-export function peaksToCsv(peaks, options = {}) {
-    const {
-        bandLower = -20,
-        bandUpper = 20,
-        referenceA4 = REFERENCE_A4,
-    } = options;
-
-    const lines = ['time_s,freq_hz,bin,salience,note,note_hz,cents,in_band'];
-    for (let i = 0; i < peaks.count; i++) {
-        const time = peaks.frame[i] * FRAME_DURATION;
-        const note = nearestNote(peaks.frequency[i], referenceA4);
-        const inBand = peaks.cents[i] >= bandLower && peaks.cents[i] <= bandUpper ? 1 : 0;
-        lines.push([
-            time.toFixed(6),
-            peaks.frequency[i].toFixed(4),
-            peaks.bin[i],
-            peaks.salience[i].toFixed(4),
-            note.name,
-            note.frequency.toFixed(4),
-            peaks.cents[i].toFixed(2),
-            inBand,
-        ].join(','));
-    }
-    return lines.join('\n') + '\n';
-}
-
-/**
- * Wide-format, tab-delimited: `time<TAB>freq1<TAB>freq2...`, one row per frame.
- *
- * Every frame gets a row, including frames with no detections, so row index and time stay in step
- * and the file can be read as a dense time series.
- */
-export function peaksToFrameCsv(peaks, frames) {
-    const byFrame = Array.from({ length: frames }, () => []);
-    for (let i = 0; i < peaks.count; i++) {
-        byFrame[peaks.frame[i]].push(peaks.frequency[i]);
-    }
-    const lines = [];
-    for (let frame = 0; frame < frames; frame++) {
-        const time = frame * FRAME_DURATION;
-        lines.push([time, ...byFrame[frame]].join('\t'));
-    }
-    return lines.join('\n') + '\n';
-}
-
-/**
- * Wide-format CSV: one row per frame that has at least one detection, with up to
- * MAX_FRAME_PITCHES pitches per row as `f0_n_hz, note_n_hz, cents_n` triples.
- *
- * Silent frames are omitted -- unlike `peaksToFrameCsv`, this is a sparse listing for eyeballing
- * what was detected, not a dense time series. Pitches are ordered low to high within a row; when a
- * frame holds more than the row can carry, the lowest-salience peaks are the ones dropped, so the
- * row keeps the detections the model was most confident about.
- */
-export function peaksToFrameNoteCsv(peaks, frames, options = {}) {
-    const { referenceA4 = REFERENCE_A4 } = options;
-
-    const byFrame = Array.from({ length: frames }, () => []);
-    for (let i = 0; i < peaks.count; i++) {
-        byFrame[peaks.frame[i]].push(i);
-    }
-
-    const header = ['time_s'];
-    for (let n = 1; n <= MAX_FRAME_PITCHES; n++) {
-        header.push(`f0_${n}_hz`, `note_${n}_hz`, `cents_${n}`);
-    }
-    const lines = [header.join(',')];
-
-    for (let frame = 0; frame < frames; frame++) {
-        let indices = byFrame[frame];
-        if (indices.length === 0) { continue; }
-        if (indices.length > MAX_FRAME_PITCHES) {
-            indices = indices.slice()
-                .sort((a, b) => peaks.salience[b] - peaks.salience[a])
-                .slice(0, MAX_FRAME_PITCHES);
-        }
-        indices = indices.slice().sort((a, b) => peaks.frequency[a] - peaks.frequency[b]);
-        // One field per column on every row, so the trailing empties keep the shape rectangular.
-        const row = new Array(1 + 3 * MAX_FRAME_PITCHES).fill('');
-        row[0] = (frame * FRAME_DURATION).toFixed(6);
-        indices.forEach((index, slot) => {
-            const frequency = peaks.frequency[index];
-            const note = nearestNote(frequency, referenceA4);
-            row[1 + 3 * slot] = frequency.toFixed(4);
-            row[2 + 3 * slot] = note.frequency.toFixed(4);
-            row[3 + 3 * slot] = (1200 * Math.log2(frequency / note.frequency)).toFixed(2);
-        });
-        lines.push(row.join(','));
-    }
-    return lines.join('\n') + '\n';
 }

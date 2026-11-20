@@ -26,7 +26,8 @@
 import {
     REFERENCE_A4, MAX_FRAME_PITCHES, ENSEMBLE_F_MIN, ENSEMBLE_F_MAX,
     KEY_FIT_HOP, KEY_FIT_TEMPLATE_WIDTH, KEY_FIT_START_RANGE, KEY_FIT_JUMP,
-    KEY_FIT_RIVAL_RATIO, KEY_FIT_RIVAL_RANGE, KEY_FIT_MIN_DETECTIONS, KEY_FIT_WINDOW_DEFAULT,
+    KEY_FIT_RIVAL_RATIO, KEY_FIT_RIVAL_RANGE, KEY_FIT_MIN_DETECTIONS_PER_FRAME,
+    KEY_FIT_WINDOW_DEFAULT, FRAME_RATE,
 } from '../constants.js';
 
 const OCTAVE = 1200;
@@ -141,6 +142,22 @@ function shiftOf(k) {
     return k < OCTAVE / 2 ? k : k - OCTAVE;
 }
 
+/**
+ * The detections of a frame the ensemble measurement uses: the MAX_FRAME_PITCHES most salient, of
+ * those the ones within the f0 range. The script this was ported from reads such a list.
+ *
+ * @returns {number[]} indices into the two arrays, ascending
+ */
+export function usableIndices(frequencies, saliences) {
+    let order = Array.from({ length: frequencies.length }, (_, i) => i);
+    if (order.length > MAX_FRAME_PITCHES) {
+        order = order.sort((a, b) => saliences[b] - saliences[a]).slice(0, MAX_FRAME_PITCHES);
+    }
+    return order
+        .filter((i) => frequencies[i] >= ENSEMBLE_F_MIN && frequencies[i] <= ENSEMBLE_F_MAX)
+        .sort((a, b) => a - b);
+}
+
 /** Median of the first `count` values; sorts them in place. */
 function medianInPlace(values, count) {
     const sorted = values.subarray(0, count).sort();
@@ -150,12 +167,14 @@ function medianInPlace(values, count) {
 
 export class EnsembleTracker {
     #window;
+    #minDetections;   // samples a window needs for a fit
     #scale;
     #template;
 
     // Detections of the last #window seconds, oldest first, from #head on: time, folded cents
     // rounded to a histogram bin, unrounded folded cents, and the residual against the key fit
-    // (NaN while there is no fit). Plain arrays, compacted now and then.
+    // (NaN while there is no fit, undefined until the detection has been resolved against the fit
+    // in effect when it arrived). Plain arrays, compacted now and then.
     #times = [];
     #bins = [];
     #cents = [];
@@ -176,6 +195,7 @@ export class EnsembleTracker {
      */
     constructor({ key = 'none', window = KEY_FIT_WINDOW_DEFAULT } = {}) {
         this.#window = window;
+        this.#minDetections = KEY_FIT_MIN_DETECTIONS_PER_FRAME * window * FRAME_RATE;
         this.#scale = scaleFromKey(key);
 
         // Gaussian bump on every scale note, with zero mean so a flat histogram scores 0 for every
@@ -200,16 +220,24 @@ export class EnsembleTracker {
      * Frames must arrive in time order. Silent frames may be passed (with no frequencies) or left
      * out; either way the fits stay on their grid of KEY_FIT_HOP seconds.
      *
+     * By default the detections are those of the frame at `time`, and at most MAX_FRAME_PITCHES of
+     * them, within the f0 range, are used. With `times` the caller has already chosen the
+     * detections, and each carries its own time stamp, which may be earlier than `time` (a
+     * detection that only later turned out to belong in the measurement): it is entered into the
+     * window where it belongs. A fit that has already been made does not change. `time` is the
+     * moment of this call and still has to increase.
+     *
      * @param {number} time s
      * @param {ArrayLike<number>} frequencies Hz, the pitches detected in this frame
      * @param {ArrayLike<number>} saliences their salience, used to keep the strongest
-     *   MAX_FRAME_PITCHES when a frame holds more
+     *   MAX_FRAME_PITCHES when a frame holds more (not used with `times`)
+     * @param {ArrayLike<number>} [times] s, the time stamp of each detection
      * @returns {{time:number, keyDrift:number, spread:number}[]} the fits that fell due, usually
      *   none or one. keyDrift is NaN when the window held too few detections to fit (the held fit
      *   is still used for the spread), and NaN until the first fit; spread is NaN when too few
      *   residuals were available.
      */
-    push(time, frequencies, saliences) {
+    push(time, frequencies, saliences, times = null) {
         const results = [];
         if (this.#firstFit === null) {
             if (frequencies.length === 0) { return results; }
@@ -221,15 +249,13 @@ export class EnsembleTracker {
             results.push(this.#fitAt(this.#nextFitTime()));
         }
 
-        const added = this.#add(time, frequencies, saliences);
+        const earliest = this.#add(time, frequencies, saliences, times);
         // A fit due at exactly this frame's time includes it, as the script's window does.
         const fitNow = this.#nextFitTime() <= time;
         let keyDrift;
         if (fitNow) { keyDrift = this.#fitKey(this.#nextFitTime()); }
         // Residuals use the latest fit made at or before this frame.
-        for (let i = this.#times.length - added; i < this.#times.length; i++) {
-            this.#residuals[i] = this.#residualOf(this.#cents[i]);
-        }
+        this.#resolveResiduals(earliest);
         if (fitNow) {
             const at = this.#nextFitTime();
             this.#fitCount++;
@@ -248,26 +274,41 @@ export class EnsembleTracker {
         return { time, keyDrift, spread: this.#spread() };
     }
 
-    /** Append this frame's usable detections; returns how many were added. */
-    #add(time, frequencies, saliences) {
-        let order = Array.from({ length: frequencies.length }, (_, i) => i);
-        if (order.length > MAX_FRAME_PITCHES) {
-            order = order.sort((a, b) => saliences[b] - saliences[a]).slice(0, MAX_FRAME_PITCHES);
-        }
-        let added = 0;
-        for (const i of order) {
-            const frequency = frequencies[i];
-            if (!(frequency >= ENSEMBLE_F_MIN && frequency <= ENSEMBLE_F_MAX)) { continue; }
-            const cents = foldedCents(frequency);
+    /**
+     * Enter this call's usable detections into the window, in time order. Returns the earliest
+     * time stamp entered (Infinity if none), so that only the entries from there on need resolving.
+     */
+    #add(time, frequencies, saliences, times) {
+        const indices = times
+            ? Array.from({ length: frequencies.length }, (_, i) => i)
+                .filter((i) => frequencies[i] >= ENSEMBLE_F_MIN && frequencies[i] <= ENSEMBLE_F_MAX)
+            : usableIndices(frequencies, saliences);
+        let earliest = Infinity;
+        for (const i of indices) {
+            const stamp = times ? times[i] : time;
+            const cents = foldedCents(frequencies[i]);
             const bin = mod(Math.round(cents), OCTAVE);
-            this.#times.push(time);
-            this.#cents.push(cents);
-            this.#bins.push(bin);
-            this.#residuals.push(NaN);
+            // Insert after every entry that is not later: late arrivals only go back a few frames,
+            // so this is a short walk from the end.
+            let at = this.#times.length;
+            while (at > this.#head && this.#times[at - 1] > stamp) { at--; }
+            this.#times.splice(at, 0, stamp);
+            this.#cents.splice(at, 0, cents);
+            this.#bins.splice(at, 0, bin);
+            this.#residuals.splice(at, 0, undefined);
             this.#histogram[bin]++;
-            added++;
+            earliest = Math.min(earliest, stamp);
         }
-        return added;
+        return earliest;
+    }
+
+    /** Resolve the entries not yet judged against a key fit, from the end back to `earliest`. */
+    #resolveResiduals(earliest) {
+        for (let i = this.#times.length - 1; i >= this.#head && this.#times[i] >= earliest; i--) {
+            if (this.#residuals[i] === undefined) {
+                this.#residuals[i] = this.#residualOf(this.#cents[i]);
+            }
+        }
     }
 
     /** Drop detections at or before `time - window`, the window's open lower edge. */
@@ -288,7 +329,7 @@ export class EnsembleTracker {
     /** One key fit over the window ending at `time`; returns its key drift or NaN. */
     #fitKey(time) {
         this.#expire(time);
-        if (this.#times.length - this.#head < KEY_FIT_MIN_DETECTIONS) { return NaN; }
+        if (this.#times.length - this.#head < this.#minDetections) { return NaN; }
 
         // score[k]: the histogram shifted by shiftOf(k) cents against the template, i.e. the
         // circular cross-correlation the script computes with ifft(fft(h) .* conj(fft(TK))).
@@ -390,7 +431,7 @@ export class EnsembleTracker {
         for (let i = this.#head; i < this.#times.length; i++) {
             if (!Number.isNaN(this.#residuals[i])) { values[count++] = this.#residuals[i]; }
         }
-        if (count < KEY_FIT_MIN_DETECTIONS) { return NaN; }
+        if (count < this.#minDetections) { return NaN; }
         const centre = medianInPlace(values, count);
         for (let i = 0; i < count; i++) { values[i] = Math.abs(values[i] - centre); }
         return medianInPlace(values, count);

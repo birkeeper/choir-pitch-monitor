@@ -14,7 +14,7 @@
 //   peaks/frame   detections per frame
 //   voiced        frames with at least one detection
 //   >max          frames with more than MAX_FRAME_PITCHES detections (the tracker drops the rest)
-//   no fit        key fits skipped for having fewer than KEY_FIT_MIN_DETECTIONS detections
+//   no fit        key fits skipped for having fewer than KEY_FIT_MIN_DETECTIONS_PER_FRAME x the window's frames tracked samples
 //   drift         key drift (cents) a quarter, half and three quarters in, and at the end
 //   spread        median of the spread (cents)
 
@@ -28,12 +28,12 @@ globalThis.document ??= {};
 
 const tf = await import('../libraries/tfjs/tfjs.js');
 const {
-    MODEL_URL, SAMPLE_RATE, FRAME_DURATION, DEFAULT_REFINE, MAX_FRAME_PITCHES,
+    MODEL_URL, SAMPLE_RATE, DEFAULT_REFINE, MAX_FRAME_PITCHES,
     KEY_FIT_WINDOW_DEFAULT,
 } = await import('../constants.js');
 const { SalienceModel } = await import('../worker/salience-model.js');
 const { extractPeaks } = await import('../worker/notes.js');
-const { EnsembleTracker } = await import('../worker/ensemble.js');
+const { trackEnsemble } = await import('../worker/ensemble-pipeline.js');
 
 const [file, key = '3b', ...rest] = process.argv.slice(2);
 if (!file) {
@@ -117,9 +117,9 @@ console.log(' tau   peaks/frame  voiced   >max  no fit   drift 25%   50%   75%  
 for (const threshold of thresholds) {
     const peaks = extractPeaks(salience, frames, { threshold, refine: DEFAULT_REFINE });
 
-    // Fed frame by frame, silent frames included, as trackEnsemble() in pitch_monitor.js does.
-    const tracker = new EnsembleTracker({ key, window: KEY_FIT_WINDOW_DEFAULT });
-    const fits = [];
+    // The app's own pipeline: pitch tracks, then the ensemble tracker on their unmasked samples.
+    const tracked = trackEnsemble(peaks, frames, { key, window: KEY_FIT_WINDOW_DEFAULT });
+    const fits = tracked.time.map((_, k) => ({ keyDrift: tracked.keyDrift[k], spread: tracked.spread[k] }));
     let voiced = 0;
     let crowded = 0;
     for (let frame = 0, i = 0; frame < frames; frame++) {
@@ -127,8 +127,6 @@ for (const threshold of thresholds) {
         while (i < peaks.count && peaks.frame[i] === frame) { i++; }
         if (i > first) { voiced++; }
         if (i - first > MAX_FRAME_PITCHES) { crowded++; }
-        fits.push(...tracker.push(frame * FRAME_DURATION,
-            peaks.frequency.subarray(first, i), peaks.salience.subarray(first, i)));
     }
 
     // The drift as the chart shows it: a skipped fit (NaN) holds the previous one.
