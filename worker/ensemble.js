@@ -1,33 +1,53 @@
 // Ensemble drift and spread, tracked causally so the same code can run on live audio.
 //
-// A port of the "key fit" and "spread" sections of scripts/script_analyse_ensemble_drift.m. The
-// script works on a whole recording at once; EnsembleTracker is fed one frame at a time and only
-// ever looks back, so the numbers it produces for a recording are the ones it would have produced
-// live. The script is causal too, so the two agree.
+// Grown from the "key fit" and "spread" sections of scripts/script_analyse_ensemble_drift.m.
+// EnsembleTracker is fed one frame at a time and only ever looks back, so the numbers it produces
+// for a recording are the ones it would have produced live. One exception: once a key change is
+// confirmed, it is traced back to where it began, and the fits made since then are revised. Live,
+// those last few seconds are first shown as they were measured and then corrected.
 //
-// Key fit: every window's notes are folded onto one octave (1200 cents above C) and a template of
-// the song's scale is slid over them; the best shift is the drift, including whole semitones.
-// Nothing is accumulated, so a bad window only spoils itself. Each fit is accepted only if the
-// checks pass; otherwise the previous fit is kept:
-//  1. Continuity: the shift is searched within +/-KEY_FIT_JUMP of the previous fit, which rules out
-//     a jump to a fifth (6 of 7 notes shared) however well it scores.
-//  2. Real peak: the best shift in that range must be a peak of this window's score curve, not its
-//     edge. At the edge the curve is still rising, and following it partway would let the fit
-//     creep away in steps.
-//  3. Clear winner: shifts a semitone and a whole tone away must score clearly lower. If one scores
-//     nearly as well, the window cannot tell which semitone the choir is in; then the candidate
-//     (best or near-equal rival) nearest to the previous fit is taken.
-// With no key (all twelve semitones in the template) check 3 always finds a rival, so the fit
-// tracks within a semitone and continuity alone carries it across semitone boundaries.
+// Key fit: a window's notes are folded onto one octave (cents above C) and a template of the
+// starting key's scale is slid over them. A shift F of that template is the drift plus 100 cents
+// for every semitone the music has modulated: the template of a key t semitones higher is the
+// starting key's template shifted by 100 t, so one correlation scores every key at once. The
+// catch is that key and whole-semitone drift cannot be told apart within one window; only
+// continuity of the drift over time separates a modulation from a slip.
 //
-// Spread: each detection is shifted by the latest key fit and compared with the nearest scale note;
-// the spread is the median absolute deviation of those residuals over the window.
+// Two windows, both fixed in constants.js:
+//  - The long window decides the key and the semitone. Key and drift are chosen together among the
+//    keys the user selected. Every key offers the real peaks of its score within +/-KEY_FIT_JUMP of
+//    the current fit (a real peak, not the edge of the range, where the curve is still rising).
+//    Each is weighted by a Gaussian of how far its drift lies from a slow moving average of the
+//    drift, the key in effect is favoured by KEY_FIT_KEEP_BONUS, and the best wins. A jump is
+//    therefore read as a key change, and a slow drift can no longer creep a semitone away. This is
+//    why the keys must be selected: with every key allowed, the fit wanders off by semitones again.
+//  - The short window refines the drift: the real peak of its score within +/-KEY_FIT_JUMP of the
+//    long fit's drift, weighted the same way. The spread is measured over the short window too.
+// Until the long window is full, the short window works alone in the starting key: its first fit is
+// searched within +/-KEY_FIT_START_RANGE of pitch, later ones within +/-KEY_FIT_JUMP of the last.
+// The long window's first fit is searched within +/-KEY_FIT_START_RANGE of pitch as well. In both
+// first fits, a rival peak scoring KEY_FIT_RIVAL_RATIO of the best makes the semitone ambiguous, and
+// the candidate nearest to pitch is taken.
+//
+// Key changes: when the long fit changes key, the moment it happened is looked for among the onsets
+// of the notes in the long window (a note's first unmasked sample). The boundary is put at the
+// onset after which the samples fit the new key best compared with the old one. From then on,
+// every sample is judged in the key in effect at its own frame, so a short window across the
+// boundary is split between the two keys, and the fits made since the boundary are revised.
+//
+// Ambiguity: when another selected key fits nearly as well at the same drift (within
+// KEY_FIT_RIVAL_RANGE, scoring KEY_FIT_RIVAL_RATIO of the best), the notes sung do not tell the keys
+// apart, and both are reported, e.g. "3# / 0". The drift is the same either way.
+//
+// Spread: each sample of the short window, in its key, is compared with the nearest scale note
+// after taking out the drift; the spread is the median absolute deviation of those residuals.
 
 import {
-    REFERENCE_A4, MAX_FRAME_PITCHES, ENSEMBLE_F_MIN, ENSEMBLE_F_MAX,
-    KEY_FIT_HOP, KEY_FIT_TEMPLATE_WIDTH, KEY_FIT_START_RANGE, KEY_FIT_JUMP,
+    REFERENCE_A4, MAX_FRAME_PITCHES, ENSEMBLE_F_MIN, ENSEMBLE_F_MAX, FRAME_RATE, FRAME_DURATION,
+    KEY_FIT_SHORT_FRAMES, KEY_FIT_LONG_FRAMES, KEY_FIT_HOP_FRAMES,
+    KEY_FIT_TEMPLATE_WIDTH, KEY_FIT_START_RANGE, KEY_FIT_JUMP,
     KEY_FIT_RIVAL_RATIO, KEY_FIT_RIVAL_RANGE, KEY_FIT_MIN_DETECTIONS_PER_FRAME,
-    KEY_FIT_WINDOW_DEFAULT, FRAME_RATE,
+    KEY_FIT_MOVE_STD, KEY_FIT_REFERENCE_TAU, KEY_FIT_KEEP_BONUS,
 } from '../constants.js';
 
 const OCTAVE = 1200;
@@ -62,6 +82,18 @@ export function scaleFromKey(key) {
     const count = Number(match[1]);
     const tonic = mod((match[2] === 'b' ? -7 : 7) * count, 12);
     return MAJOR_STEPS.map((step) => 100 * mod(tonic + step, 12)).sort((a, b) => a - b);
+}
+
+/**
+ * Semitones above C of the major tonic a key signature names; 0 for 'none'.
+ *
+ * @param {string} key one of KEY_SIGNATURES
+ * @returns {number} 0..11
+ */
+export function tonicOfKey(key) {
+    if (key === 'none') { return 0; }
+    scaleFromKey(key);   // validates the key
+    return mod((key.endsWith('b') ? -7 : 7) * Number(key[0]), 12);
 }
 
 const LETTERS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
@@ -137,11 +169,6 @@ function foldedCents(frequency) {
     return mod(OCTAVE * Math.log2(frequency / REFERENCE_A4) + 900, OCTAVE);
 }
 
-/** The correlation lag of index k (0..1199): 0..599 and then -600..-1, as in the script. */
-function shiftOf(k) {
-    return k < OCTAVE / 2 ? k : k - OCTAVE;
-}
-
 /**
  * The detections of a frame the ensemble measurement uses: the MAX_FRAME_PITCHES most salient, of
  * those the ones within the f0 range. The script this was ported from reads such a list.
@@ -165,38 +192,66 @@ function medianInPlace(values, count) {
     return count % 2 ? sorted[middle] : 0.5 * (sorted[middle - 1] + sorted[middle]);
 }
 
-export class EnsembleTracker {
-    #window;
-    #minDetections;   // samples a window needs for a fit
-    #scale;
-    #template;
 
-    // Detections of the last #window seconds, oldest first, from #head on: time, folded cents
-    // rounded to a histogram bin, unrounded folded cents, and the residual against the key fit
-    // (NaN while there is no fit, undefined until the detection has been resolved against the fit
-    // in effect when it arrived). Plain arrays, compacted now and then.
-    #times = [];
-    #bins = [];
+const SHORT_MIN = KEY_FIT_MIN_DETECTIONS_PER_FRAME * KEY_FIT_SHORT_FRAMES;
+const LONG_MIN = KEY_FIT_MIN_DETECTIONS_PER_FRAME * KEY_FIT_LONG_FRAMES;
+// Gain of the drift's moving average per fit, for a time constant of KEY_FIT_REFERENCE_TAU.
+const REFERENCE_GAIN = KEY_FIT_HOP_FRAMES / (KEY_FIT_REFERENCE_TAU * FRAME_RATE);
+// Samples are kept this long: a revision reaches back a long window, and the short window of the
+// earliest fit it revises a short window further.
+const KEEP_FRAMES = KEY_FIT_LONG_FRAMES + KEY_FIT_SHORT_FRAMES;
+
+/** Weight of a candidate whose drift lies `move` cents from the drift's moving average. */
+function moveWeight(move) {
+    return Math.exp(-(move ** 2) / (2 * KEY_FIT_MOVE_STD ** 2));
+}
+
+/** The step from offset `from` to a key `to` semitones above the start, as -5..6. */
+function stepTo(from, to) {
+    return mod(to - from + 5, 12) - 5;
+}
+
+export class EnsembleTracker {
+    #scale;                 // the starting key's scale notes, in cents above C
+    #template;              // its template, zero mean, stored twice over (see the constructor)
+    #allowed = [];          // the selected keys, as semitones above the starting key (0..11)
+    #names = new Map();     // those semitones -> the key signature the user selected
+
+    // Samples, ordered by frame, from #head on: frame, folded cents (unrounded) and track. Plain
+    // arrays, compacted now and then. #onsets: track -> its first sample's frame.
+    #frames = [];
     #cents = [];
-    #residuals = [];
+    #tracks = [];
     #head = 0;
-    #histogram = new Float64Array(OCTAVE);
+    #onsets = new Map();
+
+    #firstFrame = null;     // frame of the first sample; the first fit is a short window later
+    #fitCount = 0;          // fits made so far; also the index of the next one
+
+    #startDrift = NaN;      // the latest short-window drift, while there is no long fit yet
+    #fit = NaN;             // the long fit: drift + 100 * #offset, held while windows fail
+    #offset = 0;            // semitones the music has modulated from the starting key
+    #reference = NaN;       // slow moving average of the long fit's drift
+    #segments = [{ frame: -Infinity, offset: 0 }];   // the key in effect from each frame on
+    #history = [];          // fits a key change can still revise: {index, frame, centre, rivals}
     #score = new Float64Array(OCTAVE);
     #scratch = new Float64Array(0);
 
-    #firstFit = null;   // time of the first fit, a window after the first frame with detections
-    #fitCount = 0;      // fits made so far; the next is due at #firstFit + #fitCount * KEY_FIT_HOP
-    #fit = NaN;         // latest accepted key fit, held while later windows fail the checks
-
     /**
      * @param {object} [options]
-     * @param {string} [options.key='none'] one of KEY_SIGNATURES
-     * @param {number} [options.window] s, the smoothness setting (WK; the spread window WS equals it)
+     * @param {string} [options.key='none'] the starting key, one of KEY_SIGNATURES
+     * @param {string[]} [options.keys=[]] the other keys the song changes to (ignored with 'none')
      */
-    constructor({ key = 'none', window = KEY_FIT_WINDOW_DEFAULT } = {}) {
-        this.#window = window;
-        this.#minDetections = KEY_FIT_MIN_DETECTIONS_PER_FRAME * window * FRAME_RATE;
+    constructor({ key = 'none', keys = [] } = {}) {
         this.#scale = scaleFromKey(key);
+        const start = tonicOfKey(key);
+        for (const other of key === 'none' ? [key] : [key, ...keys]) {
+            const offset = mod(tonicOfKey(other) - start, 12);
+            if (!this.#names.has(offset)) {
+                this.#names.set(offset, other);
+                this.#allowed.push(offset);
+            }
+        }
 
         // Gaussian bump on every scale note, with zero mean so a flat histogram scores 0 for every
         // shift.
@@ -208,8 +263,8 @@ export class EnsembleTracker {
             }
         }
         const mean = template.reduce((sum, value) => sum + value, 0) / OCTAVE;
-        // Stored twice over, so the correlation can index it without wrapping: a modulo per
-        // multiply-add made the fit several times slower.
+        // Stored twice over, so the long window's correlation can index it without wrapping: a
+        // modulo per multiply-add made the fit several times slower.
         this.#template = new Float64Array(2 * OCTAVE);
         for (let x = 0; x < 2 * OCTAVE; x++) { this.#template[x] = template[x % OCTAVE] - mean; }
     }
@@ -217,223 +272,349 @@ export class EnsembleTracker {
     /**
      * Feed one frame.
      *
-     * Frames must arrive in time order. Silent frames may be passed (with no frequencies) or left
-     * out; either way the fits stay on their grid of KEY_FIT_HOP seconds.
+     * Frames must arrive in order. Silent frames may be passed (with no frequencies) or left out;
+     * either way the fits stay on their grid of KEY_FIT_HOP_FRAMES.
      *
-     * By default the detections are those of the frame at `time`, and at most MAX_FRAME_PITCHES of
-     * them, within the f0 range, are used. With `times` the caller has already chosen the
-     * detections, and each carries its own time stamp, which may be earlier than `time` (a
-     * detection that only later turned out to belong in the measurement): it is entered into the
-     * window where it belongs. A fit that has already been made does not change. `time` is the
-     * moment of this call and still has to increase.
+     * The caller chooses the samples. Each may carry its own frame, earlier than `frame` (a sample
+     * that only later turned out to belong to a note), and is entered into the windows where it
+     * belongs; a fit that has already been made only takes it into account if it is revised.
+     * Samples outside the f0 range are left out.
      *
-     * @param {number} time s
-     * @param {ArrayLike<number>} frequencies Hz, the pitches detected in this frame
-     * @param {ArrayLike<number>} saliences their salience, used to keep the strongest
-     *   MAX_FRAME_PITCHES when a frame holds more (not used with `times`)
-     * @param {ArrayLike<number>} [times] s, the time stamp of each detection
-     * @returns {{time:number, keyDrift:number, spread:number}[]} the fits that fell due, usually
-     *   none or one. keyDrift is NaN when the window held too few detections to fit (the held fit
-     *   is still used for the spread), and NaN until the first fit; spread is NaN when too few
-     *   residuals were available.
+     * @param {number} frame the frame of this call; has to increase
+     * @param {ArrayLike<number>} frequencies Hz
+     * @param {ArrayLike<number>} [frames] the frame of each sample (default: `frame`)
+     * @param {ArrayLike<number>} [tracks] the note (pitch track) of each sample, for finding the
+     *   onsets of notes (default: none; every sample's frame is then a possible key change)
+     * @returns {{index:number, frame:number, time:number, keyDrift:number, spread:number,
+     *            key:string, keyName:string}[]} the fits that fell due, usually none or one, and
+     *   the earlier fits a key change revised; a fit is identified by its index, counting from 0.
+     *   keyDrift (cents) is NaN when the short window held too few samples or no real peak (and
+     *   until the first fit); spread is NaN when it held too few samples. key is the key in effect,
+     *   or several separated by " / " when the notes sung fit them about equally; keyName is the
+     *   one being followed.
      */
-    push(time, frequencies, saliences, times = null) {
+    push(frame, frequencies, frames = null, tracks = null) {
         const results = [];
-        if (this.#firstFit === null) {
-            if (frequencies.length === 0) { return results; }
-            this.#firstFit = time + this.#window;
+        const usable = [];
+        for (let i = 0; i < frequencies.length; i++) {
+            if (frequencies[i] >= ENSEMBLE_F_MIN && frequencies[i] <= ENSEMBLE_F_MAX) { usable.push(i); }
+        }
+        const frameOf = (i) => (frames ? frames[i] : frame);
+        if (this.#firstFrame === null) {
+            if (usable.length === 0) { return results; }
+            this.#firstFrame = Math.min(...usable.map(frameOf));
         }
 
         // Fits due before this frame see only earlier frames.
-        while (this.#nextFitTime() < time) {
-            results.push(this.#fitAt(this.#nextFitTime()));
+        while (this.#nextFitFrame() < frame) {
+            results.push(...this.#fitAt(this.#nextFitFrame()));
         }
-
-        const earliest = this.#add(time, frequencies, saliences, times);
-        // A fit due at exactly this frame's time includes it, as the script's window does.
-        const fitNow = this.#nextFitTime() <= time;
-        let keyDrift;
-        if (fitNow) { keyDrift = this.#fitKey(this.#nextFitTime()); }
-        // Residuals use the latest fit made at or before this frame.
-        this.#resolveResiduals(earliest);
-        if (fitNow) {
-            const at = this.#nextFitTime();
-            this.#fitCount++;
-            results.push({ time: at, keyDrift, spread: this.#spread() });
+        for (const i of usable) {
+            this.#add(frameOf(i), frequencies[i], tracks ? tracks[i] : -1);
+        }
+        // A fit due at exactly this frame includes it.
+        if (this.#nextFitFrame() === frame) {
+            results.push(...this.#fitAt(frame));
         }
         return results;
     }
 
-    #nextFitTime() {
-        return this.#firstFit + this.#fitCount * KEY_FIT_HOP;
+    #nextFitFrame() {
+        return this.#firstFrame + KEY_FIT_SHORT_FRAMES + this.#fitCount * KEY_FIT_HOP_FRAMES;
     }
 
-    #fitAt(time) {
-        const keyDrift = this.#fitKey(time);
-        this.#fitCount++;
-        return { time, keyDrift, spread: this.#spread() };
+    /** Enter one sample, in frame order. Late arrivals only go back a few frames. */
+    #add(frame, frequency, track) {
+        let at = this.#frames.length;
+        while (at > this.#head && this.#frames[at - 1] > frame) { at--; }
+        this.#frames.splice(at, 0, frame);
+        this.#cents.splice(at, 0, foldedCents(frequency));
+        this.#tracks.splice(at, 0, track);
+        if (track >= 0) {
+            // Kept for good: an onset dropped with its samples would reappear, later, with the
+            // note's next sample. One entry per note is little even for hours.
+            const onset = this.#onsets.get(track);
+            if (onset === undefined || frame < onset) { this.#onsets.set(track, frame); }
+        }
+    }
+
+    /** Drop what no fit or revision can need any more. */
+    #expire(frame) {
+        const edge = frame - KEEP_FRAMES;
+        while (this.#head < this.#frames.length && this.#frames[this.#head] <= edge) { this.#head++; }
+        if (this.#head > 4096 && this.#head > this.#frames.length / 2) {
+            for (const list of [this.#frames, this.#cents, this.#tracks]) { list.splice(0, this.#head); }
+            this.#head = 0;
+        }
+        while (this.#segments.length > 1 && this.#segments[1].frame <= edge) { this.#segments.shift(); }
+        // A key change is placed after the start of the long window, so older fits stay as they are.
+        const revisable = frame - KEY_FIT_LONG_FRAMES;
+        while (this.#history.length && this.#history[0].frame <= revisable) { this.#history.shift(); }
+    }
+
+    /** The key (offset from the starting key) in effect at a frame. */
+    #offsetAt(frame) {
+        for (let i = this.#segments.length - 1; ; i--) {
+            if (this.#segments[i].frame <= frame) { return this.#segments[i].offset; }
+        }
+    }
+
+    /** Indices of the samples in (frame - length, frame]. */
+    #window(frame, length) {
+        let end = this.#frames.length;
+        while (end > this.#head && this.#frames[end - 1] > frame) { end--; }
+        let start = end;
+        while (start > this.#head && this.#frames[start - 1] > frame - length) { start--; }
+        return [start, end];
+    }
+
+    /** The fit due at `frame`: returns it, preceded by the fits a key change found there revised. */
+    #fitAt(frame) {
+        this.#expire(frame);
+        const index = this.#fitCount++;
+        const results = [];
+        let rivals = [];
+        if (frame >= this.#firstFrame + KEY_FIT_LONG_FRAMES) {
+            const long = this.#fitLong(frame);
+            if (long) {
+                rivals = long.rivals;
+                if (long.previous !== null) { results.push(...this.#traceBack(frame, long.previous)); }
+            }
+        }
+
+        if (Number.isNaN(this.#fit)) {
+            // No long fit yet: the short window alone, in the starting key.
+            const first = Number.isNaN(this.#startDrift);
+            const record = { index, frame, centre: first ? 0 : this.#startDrift, rivals: [] };
+            const result = this.#evaluate(record, first ? KEY_FIT_START_RANGE : KEY_FIT_JUMP, first);
+            if (Number.isFinite(result.keyDrift)) { this.#startDrift = result.keyDrift; }
+            results.push(result);
+        } else {
+            const record = { index, frame, centre: this.#fit - 100 * this.#offset, rivals };
+            this.#history.push(record);
+            results.push(this.#evaluate(record, KEY_FIT_JUMP, false));
+        }
+        return results;
     }
 
     /**
-     * Enter this call's usable detections into the window, in time order. Returns the earliest
-     * time stamp entered (Infinity if none), so that only the entries from there on need resolving.
+     * The long window's fit of key and drift at `frame`. Updates #fit, #offset and #reference.
+     *
+     * @returns {{rivals:number[], previous:number|null}|null} null if no fit could be made; rivals
+     *   are the keys (offsets) that fit about as well; previous is the fit before, if the key changed
      */
-    #add(time, frequencies, saliences, times) {
-        const indices = times
-            ? Array.from({ length: frequencies.length }, (_, i) => i)
-                .filter((i) => frequencies[i] >= ENSEMBLE_F_MIN && frequencies[i] <= ENSEMBLE_F_MAX)
-            : usableIndices(frequencies, saliences);
-        let earliest = Infinity;
-        for (const i of indices) {
-            const stamp = times ? times[i] : time;
-            const cents = foldedCents(frequencies[i]);
-            const bin = mod(Math.round(cents), OCTAVE);
-            // Insert after every entry that is not later: late arrivals only go back a few frames,
-            // so this is a short walk from the end.
-            let at = this.#times.length;
-            while (at > this.#head && this.#times[at - 1] > stamp) { at--; }
-            this.#times.splice(at, 0, stamp);
-            this.#cents.splice(at, 0, cents);
-            this.#bins.splice(at, 0, bin);
-            this.#residuals.splice(at, 0, undefined);
-            this.#histogram[bin]++;
-            earliest = Math.min(earliest, stamp);
-        }
-        return earliest;
-    }
+    #fitLong(frame) {
+        const [start, end] = this.#window(frame, KEY_FIT_LONG_FRAMES);
+        if (end - start < LONG_MIN) { return null; }
 
-    /** Resolve the entries not yet judged against a key fit, from the end back to `earliest`. */
-    #resolveResiduals(earliest) {
-        for (let i = this.#times.length - 1; i >= this.#head && this.#times[i] >= earliest; i--) {
-            if (this.#residuals[i] === undefined) {
-                this.#residuals[i] = this.#residualOf(this.#cents[i]);
-            }
-        }
-    }
-
-    /** Drop detections at or before `time - window`, the window's open lower edge. */
-    #expire(time) {
-        const edge = time - this.#window;
-        while (this.#head < this.#times.length && this.#times[this.#head] <= edge) {
-            this.#histogram[this.#bins[this.#head]]--;
-            this.#head++;
-        }
-        if (this.#head > 4096 && this.#head > this.#times.length / 2) {
-            for (const list of [this.#times, this.#bins, this.#cents, this.#residuals]) {
-                list.splice(0, this.#head);
-            }
-            this.#head = 0;
-        }
-    }
-
-    /** One key fit over the window ending at `time`; returns its key drift or NaN. */
-    #fitKey(time) {
-        this.#expire(time);
-        if (this.#times.length - this.#head < this.#minDetections) { return NaN; }
-
-        // score[k]: the histogram shifted by shiftOf(k) cents against the template, i.e. the
-        // circular cross-correlation the script computes with ifft(fft(h) .* conj(fft(TK))).
-        // The template is doubled, so template[bin + OCTAVE - k] is template[(bin - k) mod OCTAVE]
-        // with the index always in range.
-        const histogram = this.#histogram;
+        // score[k]: the window's histogram against the template shifted by k cents (mod 1200), the
+        // circular cross-correlation the script computes with ifft(fft(h) .* conj(fft(TK))). The
+        // template is doubled, so template[bin + OCTAVE - k] is template[(bin - k) mod OCTAVE].
+        const histogram = new Float64Array(OCTAVE);
+        for (let i = start; i < end; i++) { histogram[mod(Math.round(this.#cents[i]), OCTAVE)]++; }
         const template = this.#template;
         const score = this.#score.fill(0);
         for (let bin = 0; bin < OCTAVE; bin++) {
             const count = histogram[bin];
             if (count === 0) { continue; }
             const base = bin + OCTAVE;
-            for (let k = 0; k < OCTAVE; k++) {
-                score[k] += count * template[base - k];
-            }
+            for (let k = 0; k < OCTAVE; k++) { score[k] += count * template[base - k]; }
+        }
+        const at = (shift) => score[mod(shift, OCTAVE)];
+        const isPeak = (shift) => at(shift) > 0
+            && at(shift - 1) <= at(shift) && at(shift + 1) <= at(shift);
+
+        if (Number.isNaN(this.#fit)) {
+            const shift = firstPeak(at, isPeak);
+            if (Number.isNaN(shift)) { return null; }
+            this.#fit = shift;
+            this.#offset = 0;
+            this.#reference = shift;
+            return { rivals: this.#rivals(at, isPeak), previous: null };
         }
 
-        // 1. Continuity: best shift near the previous fit (near 0 for the first fit).
-        const first = Number.isNaN(this.#fit);
-        const centre = first ? 0 : this.#fit;
-        const limit = first ? KEY_FIT_START_RANGE : KEY_FIT_JUMP;
-        let best = -1;
-        let bestScore = -Infinity;
-        for (let k = 0; k < OCTAVE; k++) {
-            if (Math.abs(wrapOctave(shiftOf(k) - centre)) <= limit && score[k] > bestScore) {
-                best = k;
-                bestScore = score[k];
+        // Key and drift together: every selected key's real peaks near the current drift.
+        const drift = this.#fit - 100 * this.#offset;
+        let best = null;
+        for (const allowed of this.#allowed) {
+            const step = stepTo(this.#offset, allowed);
+            const centre = this.#fit + 100 * step;
+            for (let shift = Math.ceil(centre - KEY_FIT_JUMP); shift <= centre + KEY_FIT_JUMP; shift++) {
+                if (!isPeak(shift)) { continue; }
+                const objective = at(shift) * moveWeight(shift - centre + drift - this.#reference)
+                    * (step === 0 ? KEY_FIT_KEEP_BONUS : 1);
+                if (best === null || objective > best.objective) { best = { objective, shift, step }; }
             }
         }
-
-        // 2. Real peak: the neighbouring shifts must not score higher. Indices wrap, as shifts do.
-        const isPeak = score[mod(best - 1, OCTAVE)] <= bestScore
-            && score[mod(best + 1, OCTAVE)] <= bestScore;
-
-        // 3. Clear winner over the shifts a semitone and a whole tone away. If there is none, the
-        // best and every rival scoring within KEY_FIT_RIVAL_RATIO of it are candidates, and the one
-        // nearest to the previous fit is taken instead.
-        const candidates = [shiftOf(best)];
-        let rival = -Infinity;
-        for (const step of [-200, -100, 100, 200]) {
-            const target = shiftOf(best) + step;
-            let rivalIndex = -1;
-            let rivalScore = -Infinity;
-            for (let k = 0; k < OCTAVE; k++) {
-                if (Math.abs(wrapOctave(shiftOf(k) - target)) <= KEY_FIT_RIVAL_RANGE
-                    && score[k] > rivalScore) {
-                    rivalIndex = k;
-                    rivalScore = score[k];
-                }
-            }
-            rival = Math.max(rival, rivalScore);
-            if (rivalScore >= KEY_FIT_RIVAL_RATIO * bestScore) {
-                candidates.push(shiftOf(rivalIndex));
-            }
+        const previous = this.#fit;
+        let changed = false;
+        if (best !== null) {
+            changed = best.step !== 0;
+            this.#offset += best.step;
+            this.#fit = best.shift;
         }
-        const isClear = bestScore > 0 && rival < KEY_FIT_RIVAL_RATIO * bestScore;
-        let shift = shiftOf(best);
-        if (!isClear) {
-            let nearest = Infinity;
-            for (const candidate of candidates) {
-                const distance = Math.abs(wrapOctave(candidate - centre));
-                if (distance < nearest) {
-                    nearest = distance;
-                    shift = candidate;
-                }
-            }
-        }
-
-        if (isPeak && bestScore > 0) {
-            this.#fit = centre + wrapOctave(shift - centre);   // continues past +/-600
-        }
-        return this.#fit;
+        this.#reference += REFERENCE_GAIN * (this.#fit - 100 * this.#offset - this.#reference);
+        return { rivals: this.#rivals(at, isPeak), previous: changed ? previous : null };
     }
 
-    /** Deviation from the nearest scale note after removing the key fit; NaN before any fit. */
-    #residualOf(cents) {
-        if (Number.isNaN(this.#fit)) { return NaN; }
-        let residual = NaN;
-        let smallest = Infinity;
-        for (const note of this.#scale) {
-            const deviation = wrapOctave(cents - this.#fit - note);
-            if (Math.abs(deviation) < smallest) {
-                smallest = Math.abs(deviation);
-                residual = deviation;
+    /** The other selected keys that fit about as well as the current one at the same drift. */
+    #rivals(at, isPeak) {
+        const own = at(this.#fit);
+        const rivals = [];
+        for (const allowed of this.#allowed) {
+            const step = stepTo(this.#offset, allowed);
+            if (step === 0) { continue; }
+            const centre = this.#fit + 100 * step;
+            for (let shift = Math.ceil(centre - KEY_FIT_RIVAL_RANGE); shift <= centre + KEY_FIT_RIVAL_RANGE; shift++) {
+                if (isPeak(shift) && at(shift) >= KEY_FIT_RIVAL_RATIO * own) {
+                    rivals.push(this.#offset + step);
+                    break;
+                }
             }
         }
-        return residual;
+        return rivals;
     }
 
     /**
-     * Median absolute deviation of the window's residuals, robust against stray detections. The
-     * window was already brought up to date by the key fit made at the same time.
+     * The long fit has just changed key, from `previous` to #fit. Find where the change began,
+     * enter it, and revise the fits made since.
      */
-    #spread() {
-        const available = this.#times.length - this.#head;
-        if (this.#scratch.length < available) { this.#scratch = new Float64Array(2 * available); }
-        const values = this.#scratch;
-        let count = 0;
-        for (let i = this.#head; i < this.#times.length; i++) {
-            if (!Number.isNaN(this.#residuals[i])) { values[count++] = this.#residuals[i]; }
+    #traceBack(frame, previous) {
+        // The change lies within the long window, and after the change before it.
+        const lower = Math.max(frame - KEY_FIT_LONG_FRAMES, this.#segments[this.#segments.length - 1].frame);
+        const [start, end] = this.#window(frame, frame - lower);
+
+        // Per sample, how much better it fits the new key than the old; all of them were judged in
+        // the old key so far.
+        const template = this.#template;
+        const gains = [];
+        for (let i = start; i < end; i++) {
+            const bin = mod(Math.round(this.#cents[i]), OCTAVE);
+            gains.push(template[mod(bin - this.#fit, OCTAVE)] - template[mod(bin - previous, OCTAVE)]);
         }
-        if (count < this.#minDetections) { return NaN; }
-        const centre = medianInPlace(values, count);
-        for (let i = 0; i < count; i++) { values[i] = Math.abs(values[i] - centre); }
-        return medianInPlace(values, count);
+        // Candidates: the onsets of notes in the window; without notes, every sample's frame.
+        const candidates = new Set();
+        for (let i = start; i < end; i++) {
+            const onset = this.#tracks[i] >= 0 ? this.#onsets.get(this.#tracks[i]) : this.#frames[i];
+            if (onset > lower && onset <= frame) { candidates.add(onset); }
+        }
+        let boundary = frame;
+        let bestGain = -Infinity;
+        for (const candidate of [...candidates].sort((a, b) => a - b)) {
+            let gain = 0;
+            for (let i = start; i < end; i++) {
+                if (this.#frames[i] >= candidate) { gain += gains[i - start]; }
+            }
+            if (gain > bestGain) {
+                bestGain = gain;
+                boundary = candidate;
+            }
+        }
+
+        this.#segments.push({ frame: boundary, offset: this.#offset });
+        const revised = [];
+        for (const record of this.#history) {
+            if (record.frame < boundary) { continue; }
+            record.rivals = [];
+            revised.push(this.#evaluate(record, KEY_FIT_JUMP, false));
+        }
+        return revised;
     }
+
+    /**
+     * The short window's fit at a record's frame: drift within `range` of record.centre, and the
+     * spread. Every sample is judged in the key in effect at its own frame.
+     */
+    #evaluate(record, range, first) {
+        const [start, end] = this.#window(record.frame, KEY_FIT_SHORT_FRAMES);
+        const count = end - start;
+        if (this.#scratch.length < count) { this.#scratch = new Float64Array(2 * count); }
+        // Cents in the starting key's terms: a sample in a key t semitones higher, lowered by 100 t.
+        const cents = this.#scratch;
+        for (let i = start; i < end; i++) {
+            cents[i - start] = mod(this.#cents[i] - 100 * this.#offsetAt(this.#frames[i]), OCTAVE);
+        }
+
+        let drift = NaN;
+        let spread = NaN;
+        if (count >= SHORT_MIN) {
+            drift = this.#shortDrift(cents, count, record.centre, range, first);
+            spread = this.#spread(cents, count, Number.isFinite(drift) ? drift : record.centre);
+        }
+
+        const offset = this.#offsetAt(record.frame);
+        const keyName = this.#names.get(mod(offset, 12));
+        const key = [keyName, ...record.rivals.map((rival) => this.#names.get(mod(rival, 12)))].join(' / ');
+        return {
+            index: record.index, frame: record.frame, time: record.frame * FRAME_DURATION,
+            keyDrift: drift, spread, key, keyName,
+        };
+    }
+
+    /** The short window's drift: its best real peak within `range` of `centre`, or NaN. */
+    #shortDrift(cents, count, centre, range, first) {
+        const low = Math.ceil(centre - range) - 1;
+        const high = Math.floor(centre + range) + 1;
+        const values = new Float64Array(high - low + 1);
+        const template = this.#template;
+        for (let i = 0; i < count; i++) {
+            const bin = mod(Math.round(cents[i]), OCTAVE);
+            for (let shift = low; shift <= high; shift++) {
+                values[shift - low] += template[mod(bin - shift, OCTAVE)];
+            }
+        }
+        const at = (shift) => values[shift - low];
+        const isPeak = (shift) => shift > low && shift < high && at(shift) > 0
+            && at(shift - 1) <= at(shift) && at(shift + 1) <= at(shift);
+        if (first) { return firstPeak(at, isPeak, centre, range); }
+        let best = NaN;
+        let bestObjective = -Infinity;
+        for (let shift = low + 1; shift < high; shift++) {
+            if (!isPeak(shift)) { continue; }
+            const objective = at(shift) * moveWeight(shift - centre);
+            if (objective > bestObjective) {
+                bestObjective = objective;
+                best = shift;
+            }
+        }
+        return best;
+    }
+
+    /** Median absolute deviation of the residuals against the scale shifted by `drift`. */
+    #spread(cents, count, drift) {
+        const residuals = new Float64Array(count);
+        for (let i = 0; i < count; i++) {
+            let smallest = Infinity;
+            for (const note of this.#scale) {
+                const deviation = wrapOctave(cents[i] - drift - note);
+                if (Math.abs(deviation) < Math.abs(smallest)) { smallest = deviation; }
+            }
+            residuals[i] = smallest;
+        }
+        const centre = medianInPlace(residuals, count);
+        for (let i = 0; i < count; i++) { residuals[i] = Math.abs(residuals[i] - centre); }
+        return medianInPlace(residuals, count);
+    }
+}
+
+/**
+ * A first fit, with no earlier one to continue from: the best real peak within `range` of
+ * `centre`. When another real peak in range scores KEY_FIT_RIVAL_RATIO of it, the window cannot
+ * tell which semitone the choir is in, and the candidate nearest to `centre` is taken.
+ */
+function firstPeak(at, isPeak, centre = 0, range = KEY_FIT_START_RANGE) {
+    const peaks = [];
+    for (let shift = Math.ceil(centre - range); shift <= centre + range; shift++) {
+        if (isPeak(shift)) { peaks.push(shift); }
+    }
+    if (peaks.length === 0) { return NaN; }
+    const best = Math.max(...peaks.map(at));
+    let chosen = NaN;
+    for (const shift of peaks) {
+        if (at(shift) >= KEY_FIT_RIVAL_RATIO * best
+            && (Number.isNaN(chosen) || Math.abs(shift - centre) < Math.abs(chosen - centre))) {
+            chosen = shift;
+        }
+    }
+    return chosen;
 }

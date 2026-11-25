@@ -111,24 +111,37 @@ export const MAX_FRAME_PITCHES = 8;
 export const ENSEMBLE_F_MIN = 30;          // Hz
 export const ENSEMBLE_F_MAX = 3000;        // Hz
 
-export const KEY_FIT_HOP = 0.2;            // s between key fits (hopK)
+// Two windows, both in frames. The long one decides the key and the semitone: a short window holds
+// too few different notes to tell which semitone the choir is in, and slipped by whole semitones.
+// The short one only refines the drift within +/-KEY_FIT_JUMP of the long fit, and the spread is
+// measured over it, so both still show quick changes. The long window is a whole number of short
+// ones.
+export const KEY_FIT_SHORT_FRAMES = 86;                          // 0.998 s
+export const KEY_FIT_LONG_FRAMES = 4 * KEY_FIT_SHORT_FRAMES;     // 344 frames, 3.994 s
+export const KEY_FIT_HOP_FRAMES = 17;                            // 0.197 s between fits (hopK)
+
 export const KEY_FIT_TEMPLATE_WIDTH = 20;  // cents width of each template note (sigK)
 export const KEY_FIT_START_RANGE = 100;    // cents; the choir is assumed to start within this of pitch (startK)
 export const KEY_FIT_JUMP = 50;            // cents; search range around the previous fit (jumpK)
 export const KEY_FIT_RIVAL_RATIO = 0.85;   // a rival scoring this fraction of the best is ambiguous (qK)
-export const KEY_FIT_RIVAL_RANGE = 30;     // cents; rivals are looked for within this of best +/-100, +/-200 (compK)
+export const KEY_FIT_RIVAL_RANGE = 30;     // cents; a rival key must fit within this of the same drift (compK)
 
-// Fewer samples in the window than this many per frame of the window: no fit (minDetK in the
-// script, which used a fixed 100 for its 2 s window). The app feeds the tracker only the unmasked
-// samples of confirmed pitch tracks, and the window can be as short as KEY_FIT_WINDOW_MIN, so the
-// minimum scales with the window: 0.5 means on average half a sample per frame, e.g. a single
-// steady voice for half of the window. The shortest window (0.5 s = 43 frames) then needs 22.
+// Fewer samples in a window than this many per frame of the window: no fit (minDetK in the
+// script). The app feeds the tracker only the unmasked samples of confirmed pitch tracks; 0.5 means
+// on average half a sample per frame, e.g. a single steady voice for half of the window.
 export const KEY_FIT_MIN_DETECTIONS_PER_FRAME = 0.5;
 
-// The window (WK in the script; the spread window WS equals it) is the user's smoothness setting.
-export const KEY_FIT_WINDOW_MIN = 0.5;     // s
-export const KEY_FIT_WINDOW_MAX = 8;       // s
-export const KEY_FIT_WINDOW_DEFAULT = 2;   // s, the value the script was tuned with
+// Songs that change key. Key and whole-semitone drift cannot be told apart within one window (a
+// key at drift d scores exactly as the key a semitone higher at d - 100), so the long fit chooses
+// key and drift together, among the keys the user selected, and only continuity of the drift
+// separates a modulation from a slip:
+// - every candidate is weighted by a Gaussian of how far its drift is from a slow moving average
+//   of the drift (time constant KEY_FIT_REFERENCE_TAU), so the drift cannot creep a semitone away
+//   in a passage that fits several keys (with a time constant of 2 s or less it did, on being.flac);
+// - the key in effect is favoured by KEY_FIT_KEEP_BONUS, so a key change needs a clear winner.
+export const KEY_FIT_MOVE_STD = 25;        // cents, width of the Gaussian on the drift's move
+export const KEY_FIT_REFERENCE_TAU = 5;    // s
+export const KEY_FIT_KEEP_BONUS = 1.3;
 
 // --- Pitch tracks ---------------------------------------------------------------------------------
 //

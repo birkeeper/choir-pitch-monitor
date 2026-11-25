@@ -14,7 +14,7 @@
 //   peaks/frame   detections per frame
 //   voiced        frames with at least one detection
 //   >max          frames with more than MAX_FRAME_PITCHES detections (the tracker drops the rest)
-//   no fit        key fits skipped for having fewer than KEY_FIT_MIN_DETECTIONS_PER_FRAME x the window's frames tracked samples
+//   no fit        fits without a drift: the short window held fewer than KEY_FIT_MIN_DETECTIONS_PER_FRAME x its frames tracked samples, or no real peak
 //   drift         key drift (cents) a quarter, half and three quarters in, and at the end
 //   spread        median of the spread (cents)
 
@@ -29,7 +29,7 @@ globalThis.document ??= {};
 const tf = await import('../libraries/tfjs/tfjs.js');
 const {
     MODEL_URL, SAMPLE_RATE, DEFAULT_REFINE, MAX_FRAME_PITCHES,
-    KEY_FIT_WINDOW_DEFAULT,
+    KEY_FIT_LONG_FRAMES, KEY_FIT_SHORT_FRAMES,
 } = await import('../constants.js');
 const { SalienceModel } = await import('../worker/salience-model.js');
 const { extractPeaks } = await import('../worker/notes.js');
@@ -112,13 +112,14 @@ const started = Date.now();
 const { salience, frames } = await model.analyse(samples);
 console.error(`model done in ${((Date.now() - started) / 1000).toFixed(0)} s, ${frames} frames`);
 
-console.log(`key ${key}, window ${KEY_FIT_WINDOW_DEFAULT} s, model ${new URL(MODEL_URL).pathname}`);
+console.log(`key ${key}, windows ${KEY_FIT_LONG_FRAMES} and ${KEY_FIT_SHORT_FRAMES} frames, `
+    + `model ${new URL(MODEL_URL).pathname}`);
 console.log(' tau   peaks/frame  voiced   >max  no fit   drift 25%   50%   75%   end   spread');
 for (const threshold of thresholds) {
     const peaks = extractPeaks(salience, frames, { threshold, refine: DEFAULT_REFINE });
 
     // The app's own pipeline: pitch tracks, then the ensemble tracker on their unmasked samples.
-    const tracked = trackEnsemble(peaks, frames, { key, window: KEY_FIT_WINDOW_DEFAULT });
+    const tracked = trackEnsemble(peaks, frames, { key });
     const fits = tracked.time.map((_, k) => ({ keyDrift: tracked.keyDrift[k], spread: tracked.spread[k] }));
     let voiced = 0;
     let crowded = 0;
