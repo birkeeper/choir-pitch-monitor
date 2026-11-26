@@ -6,7 +6,7 @@
 // frames, so the numbers at any moment only depend on the audio before it -- apart from the
 // revisions the ensemble tracker makes once a key change is confirmed, which replace the fits since
 // the change began (live, those are shown first as measured and then corrected; here only the
-// corrected values are kept). That makes a full re-run cheap enough to repeat whenever the keys change.
+// corrected values are kept). That makes a full re-run cheap enough to repeat whenever the keys or the smoothness change.
 
 import { EnsembleTracker, usableIndices } from './ensemble.js';
 import { PitchTracker } from './pitch-tracker.js';
@@ -18,16 +18,17 @@ import { PitchTracker } from './pitch-tracker.js';
  * @param {object} options
  * @param {string} options.key the starting key, one of KEY_SIGNATURES
  * @param {string[]} [options.keys=[]] the other keys the song changes to
+ * @param {number} [options.smoothness] s, the ensemble tracker's short window
  * @param {object} [options.tracking] overrides for PitchTracker's options
- * @returns {{time:number[], keyDrift:number[], spread:number[], key:string[], keyName:string[],
+ * @returns {{time:number[], keyDrift:number[], spread:number[], keyName:string[],
  *            samples:{count:number, frame:Int32Array, frequency:Float64Array, masked:Uint8Array,
  *                     track:Int32Array}}}
  *   one entry per fit (see EnsembleTracker.push), and the samples that belong to tracks, masked
  *   ones included, ordered by frame and then by frequency
  */
-export function trackEnsemble(peaks, frames, { key, keys = [], tracking }) {
+export function trackEnsemble(peaks, frames, { key, keys = [], smoothness, tracking }) {
     const pitchTracker = new PitchTracker(tracking);
-    const ensemble = new EnsembleTracker({ key, keys });
+    const ensemble = new EnsembleTracker({ key, keys, smoothness });
     const fits = [];
     const all = [];
 
@@ -55,7 +56,6 @@ export function trackEnsemble(peaks, frames, { key, keys = [], tracking }) {
         time: fits.map((fit) => fit.time),
         keyDrift: fits.map((fit) => fit.keyDrift),
         spread: fits.map((fit) => fit.spread),
-        key: fits.map((fit) => fit.key),
         keyName: fits.map((fit) => fit.keyName),
         samples: {
             count: all.length,

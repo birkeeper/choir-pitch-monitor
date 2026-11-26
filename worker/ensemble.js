@@ -13,7 +13,7 @@
 // catch is that key and whole-semitone drift cannot be told apart within one window; only
 // continuity of the drift over time separates a modulation from a slip.
 //
-// Two windows, both fixed in constants.js:
+// Two windows: the long one is fixed (KEY_FIT_LONG_SECONDS), the short one is the user's smoothness:
 //  - The long window decides the key and the semitone. Key and drift are chosen together among the
 //    keys the user selected. Every key offers the real peaks of its score within +/-KEY_FIT_JUMP of
 //    the current fit (a real peak, not the edge of the range, where the curve is still rising).
@@ -27,7 +27,8 @@
 // searched within +/-KEY_FIT_START_RANGE of pitch, later ones within +/-KEY_FIT_JUMP of the last.
 // The long window's first fit is searched within +/-KEY_FIT_START_RANGE of pitch as well. In both
 // first fits, a rival peak scoring KEY_FIT_RIVAL_RATIO of the best makes the semitone ambiguous, and
-// the candidate nearest to pitch is taken.
+// the candidate nearest to pitch is taken. Later, the key in effect is favoured over rivals by
+// KEY_FIT_KEEP_BONUS; no other keys are reported.
 //
 // Key changes: when the long fit changes key, the moment it happened is looked for among the onsets
 // of the notes in the long window (a note's first unmasked sample). The boundary is put at the
@@ -35,18 +36,14 @@
 // every sample is judged in the key in effect at its own frame, so a short window across the
 // boundary is split between the two keys, and the fits made since the boundary are revised.
 //
-// Ambiguity: when another selected key fits nearly as well at the same drift (within
-// KEY_FIT_RIVAL_RANGE, scoring KEY_FIT_RIVAL_RATIO of the best), the notes sung do not tell the keys
-// apart, and both are reported, e.g. "3# / 0". The drift is the same either way.
-//
 // Spread: each sample of the short window, in its key, is compared with the nearest scale note
 // after taking out the drift; the spread is the median absolute deviation of those residuals.
 
 import {
     REFERENCE_A4, MAX_FRAME_PITCHES, ENSEMBLE_F_MIN, ENSEMBLE_F_MAX, FRAME_RATE, FRAME_DURATION,
-    KEY_FIT_SHORT_FRAMES, KEY_FIT_LONG_FRAMES, KEY_FIT_HOP_FRAMES,
+    KEY_FIT_LONG_SECONDS, KEY_FIT_SMOOTHNESS_DEFAULT, KEY_FIT_HOP_FRAMES,
     KEY_FIT_TEMPLATE_WIDTH, KEY_FIT_START_RANGE, KEY_FIT_JUMP,
-    KEY_FIT_RIVAL_RATIO, KEY_FIT_RIVAL_RANGE, KEY_FIT_MIN_DETECTIONS_PER_FRAME,
+    KEY_FIT_RIVAL_RATIO, KEY_FIT_MIN_DETECTIONS_PER_FRAME,
     KEY_FIT_MOVE_STD, KEY_FIT_REFERENCE_TAU, KEY_FIT_KEEP_BONUS,
 } from '../constants.js';
 
@@ -193,13 +190,8 @@ function medianInPlace(values, count) {
 }
 
 
-const SHORT_MIN = KEY_FIT_MIN_DETECTIONS_PER_FRAME * KEY_FIT_SHORT_FRAMES;
-const LONG_MIN = KEY_FIT_MIN_DETECTIONS_PER_FRAME * KEY_FIT_LONG_FRAMES;
 // Gain of the drift's moving average per fit, for a time constant of KEY_FIT_REFERENCE_TAU.
 const REFERENCE_GAIN = KEY_FIT_HOP_FRAMES / (KEY_FIT_REFERENCE_TAU * FRAME_RATE);
-// Samples are kept this long: a revision reaches back a long window, and the short window of the
-// earliest fit it revises a short window further.
-const KEEP_FRAMES = KEY_FIT_LONG_FRAMES + KEY_FIT_SHORT_FRAMES;
 
 /** Weight of a candidate whose drift lies `move` cents from the drift's moving average. */
 function moveWeight(move) {
@@ -214,6 +206,8 @@ function stepTo(from, to) {
 export class EnsembleTracker {
     #scale;                 // the starting key's scale notes, in cents above C
     #template;              // its template, zero mean, stored twice over (see the constructor)
+    #short;                 // the short window, in frames: the smoothness
+    #long;                  // the long window, in frames
     #allowed = [];          // the selected keys, as semitones above the starting key (0..11)
     #names = new Map();     // those semitones -> the key signature the user selected
 
@@ -233,7 +227,7 @@ export class EnsembleTracker {
     #offset = 0;            // semitones the music has modulated from the starting key
     #reference = NaN;       // slow moving average of the long fit's drift
     #segments = [{ frame: -Infinity, offset: 0 }];   // the key in effect from each frame on
-    #history = [];          // fits a key change can still revise: {index, frame, centre, rivals}
+    #history = [];          // fits a key change can still revise: {index, frame, centre}
     #score = new Float64Array(OCTAVE);
     #scratch = new Float64Array(0);
 
@@ -241,8 +235,12 @@ export class EnsembleTracker {
      * @param {object} [options]
      * @param {string} [options.key='none'] the starting key, one of KEY_SIGNATURES
      * @param {string[]} [options.keys=[]] the other keys the song changes to (ignored with 'none')
+     * @param {number} [options.smoothness] s, the short window (also the one the spread is measured
+     *   over); rounded to whole frames. The long window is always KEY_FIT_LONG_SECONDS.
      */
-    constructor({ key = 'none', keys = [] } = {}) {
+    constructor({ key = 'none', keys = [], smoothness = KEY_FIT_SMOOTHNESS_DEFAULT } = {}) {
+        this.#short = Math.max(1, Math.round(smoothness * FRAME_RATE));
+        this.#long = Math.round(KEY_FIT_LONG_SECONDS * FRAME_RATE);
         this.#scale = scaleFromKey(key);
         const start = tonicOfKey(key);
         for (const other of key === 'none' ? [key] : [key, ...keys]) {
@@ -286,12 +284,11 @@ export class EnsembleTracker {
      * @param {ArrayLike<number>} [tracks] the note (pitch track) of each sample, for finding the
      *   onsets of notes (default: none; every sample's frame is then a possible key change)
      * @returns {{index:number, frame:number, time:number, keyDrift:number, spread:number,
-     *            key:string, keyName:string}[]} the fits that fell due, usually none or one, and
+     *            keyName:string}[]} the fits that fell due, usually none or one, and
      *   the earlier fits a key change revised; a fit is identified by its index, counting from 0.
      *   keyDrift (cents) is NaN when the short window held too few samples or no real peak (and
-     *   until the first fit); spread is NaN when it held too few samples. key is the key in effect,
-     *   or several separated by " / " when the notes sung fit them about equally; keyName is the
-     *   one being followed.
+     *   until the first fit); spread is NaN when it held too few samples. keyName is the key in
+     *   effect.
      */
     push(frame, frequencies, frames = null, tracks = null) {
         const results = [];
@@ -320,7 +317,7 @@ export class EnsembleTracker {
     }
 
     #nextFitFrame() {
-        return this.#firstFrame + KEY_FIT_SHORT_FRAMES + this.#fitCount * KEY_FIT_HOP_FRAMES;
+        return this.#firstFrame + this.#short + this.#fitCount * KEY_FIT_HOP_FRAMES;
     }
 
     /** Enter one sample, in frame order. Late arrivals only go back a few frames. */
@@ -340,7 +337,9 @@ export class EnsembleTracker {
 
     /** Drop what no fit or revision can need any more. */
     #expire(frame) {
-        const edge = frame - KEEP_FRAMES;
+        // Samples are kept long enough for a revision, which reaches back a long window, and the short
+        // window of the earliest fit it revises.
+        const edge = frame - this.#long - this.#short;
         while (this.#head < this.#frames.length && this.#frames[this.#head] <= edge) { this.#head++; }
         if (this.#head > 4096 && this.#head > this.#frames.length / 2) {
             for (const list of [this.#frames, this.#cents, this.#tracks]) { list.splice(0, this.#head); }
@@ -348,7 +347,7 @@ export class EnsembleTracker {
         }
         while (this.#segments.length > 1 && this.#segments[1].frame <= edge) { this.#segments.shift(); }
         // A key change is placed after the start of the long window, so older fits stay as they are.
-        const revisable = frame - KEY_FIT_LONG_FRAMES;
+        const revisable = frame - this.#long;
         while (this.#history.length && this.#history[0].frame <= revisable) { this.#history.shift(); }
     }
 
@@ -373,24 +372,20 @@ export class EnsembleTracker {
         this.#expire(frame);
         const index = this.#fitCount++;
         const results = [];
-        let rivals = [];
-        if (frame >= this.#firstFrame + KEY_FIT_LONG_FRAMES) {
-            const long = this.#fitLong(frame);
-            if (long) {
-                rivals = long.rivals;
-                if (long.previous !== null) { results.push(...this.#traceBack(frame, long.previous)); }
-            }
+        if (frame >= this.#firstFrame + this.#long) {
+            const previous = this.#fitLong(frame);
+            if (previous !== null) { results.push(...this.#traceBack(frame, previous)); }
         }
 
         if (Number.isNaN(this.#fit)) {
             // No long fit yet: the short window alone, in the starting key.
             const first = Number.isNaN(this.#startDrift);
-            const record = { index, frame, centre: first ? 0 : this.#startDrift, rivals: [] };
+            const record = { index, frame, centre: first ? 0 : this.#startDrift };
             const result = this.#evaluate(record, first ? KEY_FIT_START_RANGE : KEY_FIT_JUMP, first);
             if (Number.isFinite(result.keyDrift)) { this.#startDrift = result.keyDrift; }
             results.push(result);
         } else {
-            const record = { index, frame, centre: this.#fit - 100 * this.#offset, rivals };
+            const record = { index, frame, centre: this.#fit - 100 * this.#offset };
             this.#history.push(record);
             results.push(this.#evaluate(record, KEY_FIT_JUMP, false));
         }
@@ -400,12 +395,11 @@ export class EnsembleTracker {
     /**
      * The long window's fit of key and drift at `frame`. Updates #fit, #offset and #reference.
      *
-     * @returns {{rivals:number[], previous:number|null}|null} null if no fit could be made; rivals
-     *   are the keys (offsets) that fit about as well; previous is the fit before, if the key changed
+     * @returns {number|null} the fit before, if the key changed; otherwise null
      */
     #fitLong(frame) {
-        const [start, end] = this.#window(frame, KEY_FIT_LONG_FRAMES);
-        if (end - start < LONG_MIN) { return null; }
+        const [start, end] = this.#window(frame, this.#long);
+        if (end - start < KEY_FIT_MIN_DETECTIONS_PER_FRAME * this.#long) { return null; }
 
         // score[k]: the window's histogram against the template shifted by k cents (mod 1200), the
         // circular cross-correlation the script computes with ifft(fft(h) .* conj(fft(TK))). The
@@ -430,7 +424,7 @@ export class EnsembleTracker {
             this.#fit = shift;
             this.#offset = 0;
             this.#reference = shift;
-            return { rivals: this.#rivals(at, isPeak), previous: null };
+            return null;
         }
 
         // Key and drift together: every selected key's real peaks near the current drift.
@@ -454,25 +448,7 @@ export class EnsembleTracker {
             this.#fit = best.shift;
         }
         this.#reference += REFERENCE_GAIN * (this.#fit - 100 * this.#offset - this.#reference);
-        return { rivals: this.#rivals(at, isPeak), previous: changed ? previous : null };
-    }
-
-    /** The other selected keys that fit about as well as the current one at the same drift. */
-    #rivals(at, isPeak) {
-        const own = at(this.#fit);
-        const rivals = [];
-        for (const allowed of this.#allowed) {
-            const step = stepTo(this.#offset, allowed);
-            if (step === 0) { continue; }
-            const centre = this.#fit + 100 * step;
-            for (let shift = Math.ceil(centre - KEY_FIT_RIVAL_RANGE); shift <= centre + KEY_FIT_RIVAL_RANGE; shift++) {
-                if (isPeak(shift) && at(shift) >= KEY_FIT_RIVAL_RATIO * own) {
-                    rivals.push(this.#offset + step);
-                    break;
-                }
-            }
-        }
-        return rivals;
+        return changed ? previous : null;
     }
 
     /**
@@ -481,7 +457,7 @@ export class EnsembleTracker {
      */
     #traceBack(frame, previous) {
         // The change lies within the long window, and after the change before it.
-        const lower = Math.max(frame - KEY_FIT_LONG_FRAMES, this.#segments[this.#segments.length - 1].frame);
+        const lower = Math.max(frame - this.#long, this.#segments[this.#segments.length - 1].frame);
         const [start, end] = this.#window(frame, frame - lower);
 
         // Per sample, how much better it fits the new key than the old; all of them were judged in
@@ -515,7 +491,6 @@ export class EnsembleTracker {
         const revised = [];
         for (const record of this.#history) {
             if (record.frame < boundary) { continue; }
-            record.rivals = [];
             revised.push(this.#evaluate(record, KEY_FIT_JUMP, false));
         }
         return revised;
@@ -526,7 +501,7 @@ export class EnsembleTracker {
      * spread. Every sample is judged in the key in effect at its own frame.
      */
     #evaluate(record, range, first) {
-        const [start, end] = this.#window(record.frame, KEY_FIT_SHORT_FRAMES);
+        const [start, end] = this.#window(record.frame, this.#short);
         const count = end - start;
         if (this.#scratch.length < count) { this.#scratch = new Float64Array(2 * count); }
         // Cents in the starting key's terms: a sample in a key t semitones higher, lowered by 100 t.
@@ -537,17 +512,16 @@ export class EnsembleTracker {
 
         let drift = NaN;
         let spread = NaN;
-        if (count >= SHORT_MIN) {
+        if (count >= KEY_FIT_MIN_DETECTIONS_PER_FRAME * this.#short) {
             drift = this.#shortDrift(cents, count, record.centre, range, first);
             spread = this.#spread(cents, count, Number.isFinite(drift) ? drift : record.centre);
         }
 
         const offset = this.#offsetAt(record.frame);
         const keyName = this.#names.get(mod(offset, 12));
-        const key = [keyName, ...record.rivals.map((rival) => this.#names.get(mod(rival, 12)))].join(' / ');
         return {
             index: record.index, frame: record.frame, time: record.frame * FRAME_DURATION,
-            keyDrift: drift, spread, key, keyName,
+            keyDrift: drift, spread, keyName,
         };
     }
 

@@ -60,6 +60,10 @@
             <label class="setting ms-2" title="The keys the song changes to. Ctrl- or shift-click to select several; ctrl-click to deselect.">other keys
                 <select id="otherKeys" multiple size="4"></select>
             </label>
+            <label class="setting ms-2" title="The window of the drift and spread: shorter shows quicker changes, longer is steadier">smoothness
+                <input type="range" id="smoothness" class="align-middle">
+                <span id="smoothnessValue"></span>
+            </label>
             <label class="setting ms-2" title="Fisheye zoom of the time axis around the pointer (or the playhead)">zoom
                 <input type="range" id="zoom" class="align-middle" min="0" step="0.1" value="0">
                 <span id="zoomValue"></span>

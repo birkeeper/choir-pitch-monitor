@@ -17,6 +17,8 @@ import { buildPitchData } from './js/pitch-data.js';
 import {
     SAMPLE_RATE, FRAME_RATE, CENTS_PER_BIN, N_BINS, REFERENCE_A4,
     DEFAULT_THRESHOLD, DEFAULT_REFINE, FISHEYE_DISTORTION_MAX,
+    KEY_FIT_SMOOTHNESS_MIN, KEY_FIT_SMOOTHNESS_MAX, KEY_FIT_SMOOTHNESS_STEP,
+    KEY_FIT_SMOOTHNESS_DEFAULT,
 } from './constants.js';
 
 // Set by version.js, which the page loads before this module; it also names the service worker's cache.
@@ -34,6 +36,8 @@ const elements = {
     audio: document.getElementById('audioElement'),
     key: document.getElementById('key'),
     otherKeys: document.getElementById('otherKeys'),
+    smoothness: document.getElementById('smoothness'),
+    smoothnessValue: document.getElementById('smoothnessValue'),
     zoom: document.getElementById('zoom'),
     zoomValue: document.getElementById('zoomValue'),
     driftNow: document.getElementById('driftNow'),
@@ -62,6 +66,10 @@ for (const key of KEY_SIGNATURES) {
     elements.otherKeys.appendChild(option);
 }
 updateOtherKeys();
+Object.assign(elements.smoothness, {
+    min: KEY_FIT_SMOOTHNESS_MIN, max: KEY_FIT_SMOOTHNESS_MAX, step: KEY_FIT_SMOOTHNESS_STEP,
+    value: KEY_FIT_SMOOTHNESS_DEFAULT,
+});
 
 // One time axis for both charts: they share the zoom, the playhead and the cursor.
 const axis = new TimeAxis();
@@ -248,15 +256,23 @@ function updateEnsemble() {
     const key = elements.key.value;
     const keys = key === 'none' ? []
         : [...elements.otherKeys.selectedOptions].map((option) => option.value);
-    const result = trackEnsemble(peaks, frames, { key, keys });
+    const result = trackEnsemble(peaks, frames, { key, keys, smoothness: readSmoothness() });
     session.ensemble = {
         time: result.time, keyDrift: result.keyDrift, spread: result.spread,
-        key: result.key, keyName: result.keyName,
+        keyName: result.keyName,
     };
     session.pitches = buildPitchData(result.samples, session.ensemble, key, frames);
     ensembleChart.setData(session.ensemble);
     pitchChart.setData(session.pitches);
     showPlayhead();
+}
+
+/** The smoothness in seconds, from the slider (which snaps to its steps), shown beside it. */
+function readSmoothness() {
+    const seconds = clamp(Number(elements.smoothness.value) || KEY_FIT_SMOOTHNESS_DEFAULT,
+        KEY_FIT_SMOOTHNESS_MIN, KEY_FIT_SMOOTHNESS_MAX);
+    elements.smoothnessValue.textContent = `${seconds.toFixed(1)} s`;
+    return seconds;
 }
 
 /**
@@ -303,7 +319,7 @@ function showPlayhead() {
     const index = ensemble ? latestIndex(ensemble.time, axis.playhead + 1e-9) : -1;
     elements.driftNow.textContent = formatCents(index >= 0 ? ensemble.keyDrift[index] : NaN, true);
     elements.spreadNow.textContent = formatCents(index >= 0 ? ensemble.spread[index] : NaN, false);
-    elements.keyNow.textContent = index >= 0 ? ensemble.key[index] : '\u2013';
+    elements.keyNow.textContent = index >= 0 ? ensemble.keyName[index] : '\u2013';
 }
 
 /** Follow the playhead smoothly while playing; timeupdate alone fires only a few times a second. */
@@ -345,6 +361,10 @@ elements.key.addEventListener('change', () => {
     updateEnsemble();
 });
 elements.otherKeys.addEventListener('change', updateEnsemble);
+// Like the keys, the smoothness only feeds the trackers.
+elements.smoothness.addEventListener('input', readSmoothness);
+elements.smoothness.addEventListener('change', updateEnsemble);
+readSmoothness();
 // Clicking the already selected entry fires no change event, but is still a choice: 'none' may be
 // the right key.
 elements.key.addEventListener('click', foldKey);

@@ -43,6 +43,12 @@ audio {
     width: 10rem;
 }
 
+#smoothnessValue {
+    display: inline-block;
+    width: 2.5rem;
+    font-variant-numeric: tabular-nums;
+}
+
 /* The other keys: a list several can be selected in, aligned with its label's top line. */
 .setting select[multiple] {
     vertical-align: top;

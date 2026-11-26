@@ -29,7 +29,7 @@ globalThis.document ??= {};
 const tf = await import('../libraries/tfjs/tfjs.js');
 const {
     MODEL_URL, SAMPLE_RATE, DEFAULT_REFINE, MAX_FRAME_PITCHES,
-    KEY_FIT_LONG_FRAMES, KEY_FIT_SHORT_FRAMES,
+    KEY_FIT_LONG_SECONDS, KEY_FIT_SMOOTHNESS_DEFAULT,
 } = await import('../constants.js');
 const { SalienceModel } = await import('../worker/salience-model.js');
 const { extractPeaks } = await import('../worker/notes.js');
@@ -112,7 +112,7 @@ const started = Date.now();
 const { salience, frames } = await model.analyse(samples);
 console.error(`model done in ${((Date.now() - started) / 1000).toFixed(0)} s, ${frames} frames`);
 
-console.log(`key ${key}, windows ${KEY_FIT_LONG_FRAMES} and ${KEY_FIT_SHORT_FRAMES} frames, `
+console.log(`key ${key}, windows ${KEY_FIT_LONG_SECONDS} s and ${KEY_FIT_SMOOTHNESS_DEFAULT} s, `
     + `model ${new URL(MODEL_URL).pathname}`);
 console.log(' tau   peaks/frame  voiced   >max  no fit   drift 25%   50%   75%   end   spread');
 for (const threshold of thresholds) {

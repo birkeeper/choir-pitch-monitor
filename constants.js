@@ -111,20 +111,22 @@ export const MAX_FRAME_PITCHES = 8;
 export const ENSEMBLE_F_MIN = 30;          // Hz
 export const ENSEMBLE_F_MAX = 3000;        // Hz
 
-// Two windows, both in frames. The long one decides the key and the semitone: a short window holds
-// too few different notes to tell which semitone the choir is in, and slipped by whole semitones.
-// The short one only refines the drift within +/-KEY_FIT_JUMP of the long fit, and the spread is
-// measured over it, so both still show quick changes. The long window is a whole number of short
-// ones.
-export const KEY_FIT_SHORT_FRAMES = 86;                          // 0.998 s
-export const KEY_FIT_LONG_FRAMES = 4 * KEY_FIT_SHORT_FRAMES;     // 344 frames, 3.994 s
+// Two windows. The long one is fixed: it decides the key and the semitone, and a short window holds
+// too few different notes to tell which semitone the choir is in (it slipped by whole semitones).
+// The short one is the user's smoothness setting: it only refines the drift within +/-KEY_FIT_JUMP
+// of the long fit, and the spread is measured over it, so both still show quick changes. Converted
+// to the nearest number of frames.
+export const KEY_FIT_LONG_SECONDS = 4;
+export const KEY_FIT_SMOOTHNESS_MIN = 0.5;       // s
+export const KEY_FIT_SMOOTHNESS_MAX = 2;         // s
+export const KEY_FIT_SMOOTHNESS_STEP = 0.5;      // s
+export const KEY_FIT_SMOOTHNESS_DEFAULT = 1;     // s
 export const KEY_FIT_HOP_FRAMES = 17;                            // 0.197 s between fits (hopK)
 
 export const KEY_FIT_TEMPLATE_WIDTH = 20;  // cents width of each template note (sigK)
 export const KEY_FIT_START_RANGE = 100;    // cents; the choir is assumed to start within this of pitch (startK)
 export const KEY_FIT_JUMP = 50;            // cents; search range around the previous fit (jumpK)
-export const KEY_FIT_RIVAL_RATIO = 0.85;   // a rival scoring this fraction of the best is ambiguous (qK)
-export const KEY_FIT_RIVAL_RANGE = 30;     // cents; a rival key must fit within this of the same drift (compK)
+export const KEY_FIT_RIVAL_RATIO = 0.85;   // in a first fit, a rival scoring this fraction of the best is ambiguous (qK)
 
 // Fewer samples in a window than this many per frame of the window: no fit (minDetK in the
 // script). The app feeds the tracker only the unmasked samples of confirmed pitch tracks; 0.5 means

@@ -42,6 +42,6 @@ for (const row of rows) {
 const format = (value) => (Number.isNaN(value) ? 'NaN' : value.toFixed(6));
 const lines = ['time_s,key_drift,spread,key'];
 for (const fit of fits) {
-    lines.push(`${fit.time.toFixed(6)},${format(fit.keyDrift)},${format(fit.spread)},${fit.key}`);
+    lines.push(`${fit.time.toFixed(6)},${format(fit.keyDrift)},${format(fit.spread)},${fit.keyName}`);
 }
 process.stdout.write(lines.join('\n') + '\n');
